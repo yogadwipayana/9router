@@ -18,12 +18,14 @@ if (!global._statsEmitter) {
 if (!global._pendingTimers) global._pendingTimers = {};
 if (!global._recentRing) global._recentRing = { items: [], initialized: false };
 if (!global._connectionMapCache) global._connectionMapCache = { map: {}, ts: 0 };
+if (!global._apiKeyMapCache) global._apiKeyMapCache = { map: {}, ts: 0 };
 
 const pendingRequests = global._pendingRequests;
 const lastErrorProvider = global._lastErrorProvider;
 const pendingTimers = global._pendingTimers;
 const recentRing = global._recentRing;
 const connCache = global._connectionMapCache;
+const apiKeyCache = global._apiKeyMapCache;
 
 export const statsEmitter = global._statsEmitter;
 
@@ -94,6 +96,25 @@ async function getConnectionMapCached() {
     connCache.ts = Date.now();
   } catch {}
   return connCache.map;
+}
+
+async function getApiKeyMapCached() {
+  if (Date.now() - apiKeyCache.ts < CONN_CACHE_TTL_MS) return apiKeyCache.map;
+  try {
+    const { getApiKeys } = await import("./apiKeysRepo.js");
+    const all = await getApiKeys();
+    const map = {};
+    for (const k of all) map[k.key] = { name: k.name, id: k.id, createdAt: k.createdAt };
+    apiKeyCache.map = map;
+    apiKeyCache.ts = Date.now();
+  } catch {}
+  return apiKeyCache.map;
+}
+
+function resolveKeyName(apiKey, apiKeyMap) {
+  if (!apiKey || typeof apiKey !== "string") return "Local";
+  const info = apiKeyMap[apiKey];
+  return info?.name || apiKey.slice(0, 8) + "...";
 }
 
 async function ensureRingInitialized() {
@@ -214,6 +235,7 @@ export async function getActiveRequests() {
   }
 
   await ensureRingInitialized();
+  const apiKeyMap = await getApiKeyMapCached();
   const seen = new Set();
   const recentRequests = [...recentRing.items]
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
@@ -221,6 +243,8 @@ export async function getActiveRequests() {
       const t = e.tokens || {};
       return {
         timestamp: e.timestamp, model: e.model, provider: e.provider || "",
+        apiKey: e.apiKey || null,
+        keyName: resolveKeyName(e.apiKey, apiKeyMap),
         promptTokens: t.prompt_tokens || t.input_tokens || 0,
         completionTokens: t.completion_tokens || t.output_tokens || 0,
         status: e.status || "ok",
@@ -229,7 +253,7 @@ export async function getActiveRequests() {
     .filter((e) => {
       if (e.promptTokens === 0 && e.completionTokens === 0) return false;
       const minute = e.timestamp ? e.timestamp.slice(0, 16) : "";
-      const key = `${e.model}|${e.provider}|${e.promptTokens}|${e.completionTokens}|${minute}`;
+      const key = `${e.model}|${e.provider}|${e.apiKey || ""}|${e.promptTokens}|${e.completionTokens}|${minute}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -342,13 +366,15 @@ export async function getUsageStats(period = "all") {
   for (const k of allApiKeys) apiKeyMap[k.key] = { name: k.name, id: k.id, createdAt: k.createdAt };
 
   // recentRequests from live history (last 100 entries enough for 20 deduped)
-  const recentRows = db.all(`SELECT timestamp, provider, model, tokens, status FROM usageHistory ORDER BY id DESC LIMIT 100`);
+  const recentRows = db.all(`SELECT timestamp, provider, model, apiKey, tokens, status FROM usageHistory ORDER BY id DESC LIMIT 100`);
   const seen = new Set();
   const recentRequests = recentRows
     .map((r) => {
       const t = parseJson(r.tokens, {}) || {};
       return {
         timestamp: r.timestamp, model: r.model, provider: r.provider || "",
+        apiKey: r.apiKey || null,
+        keyName: resolveKeyName(r.apiKey, apiKeyMap),
         promptTokens: t.prompt_tokens || t.input_tokens || 0,
         completionTokens: t.completion_tokens || t.output_tokens || 0,
         status: r.status || "ok",
@@ -357,7 +383,7 @@ export async function getUsageStats(period = "all") {
     .filter((e) => {
       if (e.promptTokens === 0 && e.completionTokens === 0) return false;
       const minute = e.timestamp ? e.timestamp.slice(0, 16) : "";
-      const key = `${e.model}|${e.provider}|${e.promptTokens}|${e.completionTokens}|${minute}`;
+      const key = `${e.model}|${e.provider}|${e.apiKey || ""}|${e.promptTokens}|${e.completionTokens}|${minute}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
