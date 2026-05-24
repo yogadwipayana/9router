@@ -10,6 +10,66 @@ import {
 import { useHeaderSearchStore } from "@/store/headerSearchStore";
 import { useNotificationStore } from "@/store/notificationStore";
 
+const SORT_OPTIONS = [
+  { value: "newest", label: "Newest first" },
+  { value: "oldest", label: "Oldest first" },
+  { value: "nameAZ", label: "Name A\u2013Z" },
+  { value: "nameZA", label: "Name Z\u2013A" },
+];
+
+// Returns a numeric recency score for a model ID.
+// Higher = newer. Uses embedded YYYYMMDD dates (highest priority)
+// then decimal version numbers (e.g. "5.4" → 5400) then plain integers.
+// Never invents dates — returns 0 when no version info is found.
+function getModelRecencyScore(id) {
+  const s = String(id).toLowerCase();
+
+  // 8-digit date pattern YYYYMMDD (e.g. claude-opus-4-20250514)
+  const dates = s.match(/\d{8}/g);
+  if (dates) {
+    for (const d of dates) {
+      const y = +d.slice(0, 4), mo = +d.slice(4, 6), dy = +d.slice(6, 8);
+      if (y >= 2020 && y <= 2035 && mo >= 1 && mo <= 12 && dy >= 1 && dy <= 31) {
+        return 1_000_000 + y * 10000 + mo * 100 + dy;
+      }
+    }
+  }
+
+  // Decimal version X.Y (e.g. "5.4", "3.1", "2.5")
+  const vm = [...s.matchAll(/(\d+)\.(\d+)/g)];
+  if (vm.length > 0) {
+    return Math.max(...vm.map((m) => +m[1] * 1000 + +m[2]));
+  }
+
+  // Single integers (e.g. "o3", "o4-mini")
+  const nm = s.match(/\d+/g);
+  if (nm) return Math.max(...nm.map(Number)) * 10;
+
+  return 0;
+}
+
+function sortModels(models, order) {
+  const arr = [...models];
+  switch (order) {
+    case "newest":
+      return arr.sort((a, b) => {
+        const diff = getModelRecencyScore(b.id) - getModelRecencyScore(a.id);
+        return diff !== 0 ? diff : a.name.localeCompare(b.name);
+      });
+    case "oldest":
+      return arr.sort((a, b) => {
+        const diff = getModelRecencyScore(a.id) - getModelRecencyScore(b.id);
+        return diff !== 0 ? diff : a.name.localeCompare(b.name);
+      });
+    case "nameAZ":
+      return arr.sort((a, b) => a.name.localeCompare(b.name));
+    case "nameZA":
+      return arr.sort((a, b) => b.name.localeCompare(a.name));
+    default:
+      return arr;
+  }
+}
+
 const typeLabels = {
   llm: "Chat",
   image: "Image",
@@ -114,6 +174,7 @@ export default function ModelsManagementClient() {
   const [refreshing, setRefreshing] = useState(false);
   const [expanded, setExpanded] = useState({});
   const [pending, setPending] = useState({});
+  const [sortOrder, setSortOrder] = useState("newest");
   const notifySuccess = useNotificationStore((s) => s.success);
   const notifyError = useNotificationStore((s) => s.error);
   const searchQuery = useHeaderSearchStore((s) => s.query);
@@ -152,16 +213,21 @@ export default function ModelsManagementClient() {
 
   const filteredProviders = useMemo(() => {
     const needle = searchQuery.trim().toLowerCase();
-    if (!needle) return catalog.providers;
+    const groups = !needle
+      ? catalog.providers
+      : catalog.providers
+          .map((group) => {
+            const providerMatch = matchesProvider(group, needle);
+            const models = group.models.filter((model) => providerMatch || matchesModel(model, needle));
+            return models.length > 0 ? { ...group, models } : null;
+          })
+          .filter(Boolean);
 
-    return catalog.providers
-      .map((group) => {
-        const providerMatch = matchesProvider(group, needle);
-        const models = group.models.filter((model) => providerMatch || matchesModel(model, needle));
-        return models.length > 0 ? { ...group, models } : null;
-      })
-      .filter(Boolean);
-  }, [catalog.providers, searchQuery]);
+    return groups.map((group) => ({
+      ...group,
+      models: sortModels(group.models, sortOrder),
+    }));
+  }, [catalog.providers, searchQuery, sortOrder]);
 
   const setModelDisabled = (providerAlias, modelId, disabled) => {
     setCatalog((current) => {
@@ -282,7 +348,26 @@ export default function ModelsManagementClient() {
             </Badge>
           </div>
         </div>
-        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+          <div className="relative w-full sm:w-auto">
+            <span className="material-symbols-outlined pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[15px] text-text-muted">
+              sort
+            </span>
+            <select
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value)}
+              className="w-full appearance-none rounded-[10px] border border-transparent bg-surface-2 py-2 pl-8 pr-8 text-sm text-text-main transition-all focus:outline-none focus:ring-2 focus:ring-brand-500/30 sm:w-auto"
+            >
+              {SORT_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <span className="material-symbols-outlined pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[16px] text-text-muted">
+              expand_more
+            </span>
+          </div>
           <Button
             variant="secondary"
             icon="refresh"

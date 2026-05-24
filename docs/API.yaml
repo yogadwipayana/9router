@@ -1,0 +1,1785 @@
+openapi: 3.1.0
+
+info:
+  title: 9Router External API
+  version: "1.0"
+  description: |
+    OpenAI-compatible routing gateway API for 9Router.
+
+    9Router exposes a single local endpoint that proxies and translates requests across
+    40+ upstream AI providers (OpenAI, Anthropic, Gemini, OpenRouter, etc.).
+
+    ## Route Aliases / Rewrites
+
+    The following URL prefixes are all valid and equivalent — Next.js rewrites them
+    to the canonical `/api/v1/*` handler:
+
+    | Client URL | Canonical Handler |
+    |---|---|
+    | `/v1/*` | `/api/v1/*` |
+    | `/v1/v1/*` | `/api/v1/*` |
+    | `/codex/*` | `/api/v1/responses` |
+
+    ## Model Naming Convention
+
+    Models are identified as `{providerAlias}/{modelId}`, for example:
+    - `openai/gpt-4o`
+    - `anthropic/claude-opus-4-5`
+    - `openrouter/meta-llama/llama-3-8b-instruct`
+
+    The provider alias is the short prefix shown in `/v1/models`.
+
+    ## Authentication
+
+    Authentication is optional by default. When the `requireApiKey` setting is enabled
+    in the 9Router dashboard, all requests must include a valid API key.
+
+    API keys are managed under Settings → API Keys in the dashboard.
+
+servers:
+  - url: http://localhost:20128
+    description: Default local server
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        API key passed as `Authorization: Bearer <key>`.
+        Only enforced when `requireApiKey` is enabled in settings.
+        When disabled, the header is accepted but not validated.
+
+  responses:
+    BadRequest:
+      description: Bad request (missing required fields, invalid JSON, invalid model, etc.)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Unauthorized — missing or invalid API key (only when requireApiKey is enabled)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ServiceUnavailable:
+      description: All provider accounts are rate-limited or unavailable
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema:
+            type: integer
+        X-Retry-After-Human:
+          description: Human-readable retry wait (e.g. "2 minutes").
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+              example: invalid_request_error
+            code:
+              type: integer
+          required:
+            - message
+
+    ChatMessage:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                additionalProperties: true
+        name:
+          type: string
+        tool_call_id:
+          type: string
+        tool_calls:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+      required:
+        - role
+      additionalProperties: true
+
+    ChatCompletionRequest:
+      type: object
+      required:
+        - model
+        - messages
+      properties:
+        model:
+          type: string
+          description: Model identifier in `{providerAlias}/{modelId}` format.
+          example: openai/gpt-4o
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        stream:
+          type: boolean
+          default: false
+          description: >
+            If true, the server streams partial tokens using Server-Sent Events (SSE).
+            Each event is `data: {json}\n\n`. The stream ends with `data: [DONE]\n\n`.
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+        top_p:
+          type: number
+        max_tokens:
+          type: integer
+        stop:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        tools:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        tool_choice:
+          oneOf:
+            - type: string
+            - type: object
+              additionalProperties: true
+        reasoning_effort:
+          type: string
+          description: Reasoning effort level (provider-specific, e.g. "high", "medium", "low").
+      additionalProperties: true
+
+    ChatCompletionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          example: chat.completion
+        created:
+          type: integer
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              message:
+                type: object
+                properties:
+                  role:
+                    type: string
+                  content:
+                    type: string
+                  tool_calls:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                additionalProperties: true
+              finish_reason:
+                type: string
+                enum: [stop, length, tool_calls, content_filter, null]
+            additionalProperties: true
+        usage:
+          type: object
+          properties:
+            prompt_tokens:
+              type: integer
+            completion_tokens:
+              type: integer
+            total_tokens:
+              type: integer
+          additionalProperties: true
+      additionalProperties: true
+
+    ChatStreamChunk:
+      type: object
+      description: >
+        Single SSE chunk emitted during a streaming chat completion.
+        Delivered as `data: {json}\n\n`. The final event is `data: [DONE]\n\n`.
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          example: chat.completion.chunk
+        created:
+          type: integer
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              delta:
+                type: object
+                properties:
+                  role:
+                    type: string
+                  content:
+                    type: string
+                  reasoning_content:
+                    type: string
+                    description: Reasoning/thinking token content (extended field, provider-specific).
+                  tool_calls:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                additionalProperties: true
+              finish_reason:
+                type: string
+                nullable: true
+            additionalProperties: true
+        usage:
+          description: Only present on the final chunk when finish_reason is set.
+          type: object
+          properties:
+            prompt_tokens:
+              type: integer
+            completion_tokens:
+              type: integer
+            total_tokens:
+              type: integer
+          additionalProperties: true
+      additionalProperties: true
+
+    ModelObject:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Full model ID in `{providerAlias}/{modelId}` format.
+          example: openai/gpt-4o
+        object:
+          type: string
+          example: model
+        owned_by:
+          type: string
+          description: Provider alias.
+          example: openai
+        kind:
+          type: string
+          description: >
+            Present only for web-capability models returned by `/v1/models/web`.
+            Values: `webSearch` or `webFetch`.
+      additionalProperties: true
+
+    ModelListResponse:
+      type: object
+      properties:
+        object:
+          type: string
+          example: list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelObject'
+
+    EmbeddingRequest:
+      type: object
+      required:
+        - model
+        - input
+      properties:
+        model:
+          type: string
+          example: openai/text-embedding-3-small
+        input:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        encoding_format:
+          type: string
+          enum: [float, base64]
+          default: float
+      additionalProperties: true
+
+    EmbeddingResponse:
+      type: object
+      properties:
+        object:
+          type: string
+          example: list
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              object:
+                type: string
+                example: embedding
+              embedding:
+                type: array
+                items:
+                  type: number
+        model:
+          type: string
+        usage:
+          type: object
+          additionalProperties: true
+      additionalProperties: true
+
+    ImageGenerationRequest:
+      type: object
+      required:
+        - model
+        - prompt
+      properties:
+        model:
+          type: string
+          example: openai/dall-e-3
+        prompt:
+          type: string
+        n:
+          type: integer
+          default: 1
+        size:
+          type: string
+          example: 1024x1024
+        quality:
+          type: string
+          example: standard
+        style:
+          type: string
+        response_format:
+          type: string
+          enum: [url, b64_json]
+      additionalProperties: true
+
+    ImageGenerationResponse:
+      type: object
+      properties:
+        created:
+          type: integer
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              url:
+                type: string
+              b64_json:
+                type: string
+              revised_prompt:
+                type: string
+            additionalProperties: true
+      additionalProperties: true
+
+    TtsRequest:
+      type: object
+      required:
+        - model
+        - input
+      properties:
+        model:
+          type: string
+          description: >
+            TTS model/voice in `{providerAlias}/{voiceId}` format.
+            Use `/v1/audio/voices?provider={p}` to enumerate available voices.
+          example: elevenlabs/Rachel
+        input:
+          type: string
+          description: Text to synthesize.
+        language:
+          type: string
+          description: Optional BCP-47 language hint (used by some providers, e.g. Gemini).
+          example: en
+      additionalProperties: true
+
+    TranscriptionResponse:
+      type: object
+      properties:
+        text:
+          type: string
+          description: Transcribed text.
+      additionalProperties: true
+
+    SearchRequest:
+      type: object
+      required:
+        - query
+      properties:
+        provider:
+          type: string
+          description: >
+            Search provider alias (e.g. `brave`, `tavily`, `serper`).
+            Also accepted as `model` — the provider IS the model for search.
+          example: brave
+        model:
+          type: string
+          description: Alias for `provider` field. Either `provider` or `model` must be set.
+        query:
+          type: string
+          description: Search query string.
+        max_results:
+          type: integer
+          description: Maximum number of results to return.
+          default: 10
+        search_type:
+          type: string
+          description: Provider-specific search type (e.g. `web`, `news`, `images`).
+        country:
+          type: string
+          description: Two-letter country code for localized results.
+        language:
+          type: string
+          description: Language code for results.
+        time_range:
+          type: string
+          description: Time filter (e.g. `day`, `week`, `month`, `year`).
+        offset:
+          type: integer
+          description: Pagination offset.
+        domain_filter:
+          type: string
+          description: Restrict results to a specific domain.
+        content_options:
+          type: object
+          description: Provider-specific content options.
+          additionalProperties: true
+        provider_options:
+          type: object
+          description: Arbitrary provider-specific options passed through.
+          additionalProperties: true
+      additionalProperties: true
+
+    WebFetchRequest:
+      type: object
+      required:
+        - url
+      properties:
+        provider:
+          type: string
+          description: >
+            Fetch provider alias (e.g. `jina`, `firecrawl`).
+            Also accepted as `model`.
+          example: jina
+        model:
+          type: string
+          description: Alias for `provider` field.
+        url:
+          type: string
+          description: Target URL to fetch and extract.
+          example: https://example.com/article
+        format:
+          type: string
+          description: Output format hint (e.g. `markdown`, `text`, `html`).
+          example: markdown
+        max_characters:
+          type: integer
+          description: Maximum number of characters to return from the page.
+      additionalProperties: true
+
+    CountTokensRequest:
+      type: object
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        model:
+          type: string
+      additionalProperties: true
+
+    CountTokensResponse:
+      type: object
+      properties:
+        input_tokens:
+          type: integer
+          description: >
+            Estimated number of input tokens. Calculated from character count
+            using a ~4 chars/token heuristic (mock implementation).
+
+    ResponsesRequest:
+      type: object
+      required:
+        - model
+      properties:
+        model:
+          type: string
+          example: openai/gpt-4o
+        input:
+          description: >
+            Input messages. Accepts the OpenAI Responses API `input` array
+            or a plain string.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                additionalProperties: true
+        stream:
+          type: boolean
+          default: false
+        instructions:
+          type: string
+          description: System-level instructions (Responses API equivalent of `system`).
+        tools:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        temperature:
+          type: number
+        max_output_tokens:
+          type: integer
+        reasoning:
+          type: object
+          additionalProperties: true
+      additionalProperties: true
+
+    GeminiGenerateRequest:
+      type: object
+      properties:
+        contents:
+          type: array
+          items:
+            type: object
+            properties:
+              role:
+                type: string
+                enum: [user, model]
+              parts:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    text:
+                      type: string
+                  additionalProperties: true
+            additionalProperties: true
+        systemInstruction:
+          type: object
+          properties:
+            parts:
+              type: array
+              items:
+                type: object
+                properties:
+                  text:
+                    type: string
+        generationConfig:
+          type: object
+          properties:
+            maxOutputTokens:
+              type: integer
+            temperature:
+              type: number
+            topP:
+              type: number
+          additionalProperties: true
+      additionalProperties: true
+
+    GeminiGenerateResponse:
+      type: object
+      properties:
+        candidates:
+          type: array
+          items:
+            type: object
+            properties:
+              content:
+                type: object
+                properties:
+                  role:
+                    type: string
+                    example: model
+                  parts:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        text:
+                          type: string
+                        thought:
+                          type: boolean
+                          description: Present when the part contains reasoning/thinking tokens.
+              finishReason:
+                type: string
+                enum: [STOP, MAX_TOKENS, SAFETY]
+              index:
+                type: integer
+        usageMetadata:
+          type: object
+          properties:
+            promptTokenCount:
+              type: integer
+            candidatesTokenCount:
+              type: integer
+            totalTokenCount:
+              type: integer
+            thoughtsTokenCount:
+              type: integer
+              description: Reasoning tokens (present when the model used extended thinking).
+        modelVersion:
+          type: string
+      additionalProperties: true
+
+    VoiceObject:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Voice ID (provider-specific).
+        name:
+          type: string
+        lang:
+          type: string
+          description: BCP-47 language tag.
+        gender:
+          type: string
+        model:
+          type: string
+          description: >
+            Full model string ready for use as the `model` field in `/v1/audio/speech`.
+            Format: `{providerAlias}/{voiceId}`.
+          example: el/Rachel
+      additionalProperties: true
+
+    ModelInfoResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Full model ID (`{providerAlias}/{modelId}`).
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [llm, image, tts, stt, embedding, imageToText, webSearch, webFetch]
+        owned_by:
+          type: string
+        endpoint:
+          type: string
+          description: The API endpoint to use for this model.
+          example: /v1/chat/completions
+        params:
+          type: array
+          items:
+            type: string
+          description: Supported request parameters (for search/fetch models).
+        capabilities:
+          type: object
+          additionalProperties: true
+        options:
+          type: object
+          additionalProperties: true
+        dimensions:
+          type: integer
+          description: Embedding dimensions (embedding models only).
+        contextWindow:
+          type: integer
+          description: Maximum context window in tokens.
+        voicesUrl:
+          type: string
+          description: >
+            URL to retrieve available voices (TTS models with dynamic voice lists only).
+            Example: `/v1/audio/voices?provider=elevenlabs`
+        searchTypes:
+          type: array
+          items:
+            type: string
+          description: Supported search types (webSearch models only).
+        maxResults:
+          type: integer
+          description: Maximum allowed results (webSearch models only).
+      additionalProperties: true
+
+    GeminiModelObject:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Resource name in `models/{provider}/{modelId}` format.
+          example: models/openai/gpt-4o
+        displayName:
+          type: string
+        description:
+          type: string
+        supportedGenerationMethods:
+          type: array
+          items:
+            type: string
+          example: [generateContent]
+        inputTokenLimit:
+          type: integer
+        outputTokenLimit:
+          type: integer
+      additionalProperties: true
+
+security:
+  - BearerAuth: []
+  - {}
+
+tags:
+  - name: Chat
+    description: Chat completion endpoints (OpenAI, Claude, Responses API formats).
+  - name: Responses
+    description: OpenAI Responses API and compact context endpoints.
+  - name: Claude
+    description: Anthropic/Claude-style endpoints.
+  - name: Models
+    description: Model catalog endpoints.
+  - name: Embeddings
+    description: Text embedding endpoints.
+  - name: Images
+    description: Image generation endpoints.
+  - name: Audio
+    description: Text-to-speech, speech-to-text, and voice list endpoints.
+  - name: Search
+    description: Web search endpoints.
+  - name: Web Fetch
+    description: Web URL fetch/extraction endpoints.
+  - name: Compatibility
+    description: Gemini API compatibility and Ollama-compatible endpoints.
+
+paths:
+
+  # ── Models ──────────────────────────────────────────────────────────────────
+
+  /v1/models:
+    get:
+      tags: [Models]
+      summary: List LLM/chat models
+      description: |
+        Returns an OpenAI-compatible list of all LLM/chat models available across
+        configured providers. Only returns models of kind `llm` (excludes image,
+        TTS, embedding, etc.).
+
+        Use `/v1/models/{kind}` to list models for other capability types.
+
+        Note: `GET /v1` is an alias for this endpoint.
+      security:
+        - BearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: Model list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelListResponse'
+              example:
+                object: list
+                data:
+                  - id: openai/gpt-4o
+                    object: model
+                    owned_by: openai
+                  - id: anthropic/claude-opus-4-5
+                    object: model
+                    owned_by: anthropic
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/models/{kind}:
+    get:
+      tags: [Models]
+      summary: List models by capability type
+      description: |
+        Returns models filtered by service kind. Supported kinds:
+
+        | `{kind}` | Description |
+        |---|---|
+        | `image` | Image generation models |
+        | `tts` | Text-to-speech models |
+        | `stt` | Speech-to-text models |
+        | `embedding` | Embedding models |
+        | `image-to-text` | Image-to-text (vision) models |
+        | `web` | Web search + web fetch models (both `webSearch` and `webFetch` kinds) |
+
+        Web models include an additional `kind` field (`webSearch` or `webFetch`)
+        to distinguish their capability.
+      security:
+        - BearerAuth: []
+        - {}
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [image, tts, stt, embedding, image-to-text, web]
+          description: Model capability kind.
+          example: tts
+      responses:
+        "200":
+          description: Filtered model list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelListResponse'
+              example:
+                object: list
+                data:
+                  - id: openai/tts-1
+                    object: model
+                    owned_by: openai
+                  - id: el/Rachel
+                    object: model
+                    owned_by: el
+        "404":
+          description: Unknown kind
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/models/info:
+    get:
+      tags: [Models]
+      summary: Get metadata for a single model
+      description: |
+        Returns detailed metadata for a specific model identified by its full ID
+        (`{providerAlias}/{modelId}`).
+
+        Includes capability kind, recommended endpoint, context window, dimensions
+        (for embeddings), and voice list URL (for TTS providers with dynamic voices).
+      security:
+        - BearerAuth: []
+        - {}
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Full model ID, e.g. `openai/dall-e-3` or `openai/text-embedding-3-small`.
+          example: openai/dall-e-3
+      responses:
+        "200":
+          description: Model metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelInfoResponse'
+              example:
+                id: openai/dall-e-3
+                name: DALL·E 3
+                kind: image
+                owned_by: openai
+                endpoint: /v1/images/generations
+        "400":
+          description: Missing required query parameter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Model not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── Chat ────────────────────────────────────────────────────────────────────
+
+  /v1/chat/completions:
+    post:
+      tags: [Chat]
+      summary: Chat completions (OpenAI-compatible)
+      description: |
+        OpenAI-compatible chat completions endpoint. Accepts OpenAI chat format
+        and transparently routes to the selected provider.
+
+        The format translation layer (`open-sse` translator) auto-detects and
+        converts between OpenAI, Claude (Anthropic), and OpenAI Responses API
+        formats based on the endpoint and request body.
+
+        **Streaming:** Set `stream: true` to receive tokens incrementally via
+        Server-Sent Events. Each event is:
+        ```
+        data: {"id":"...","choices":[{"delta":{"content":"..."},"finish_reason":null}]}\n\n
+        ```
+        The stream ends with:
+        ```
+        data: [DONE]\n\n
+        ```
+
+        **Combo models:** If the `model` field refers to a configured combo
+        (a named group of models), 9Router applies the configured fallback or
+        round-robin strategy automatically.
+
+        **Authentication:** Required only when `requireApiKey` is enabled in settings.
+      security:
+        - BearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+            examples:
+              non_streaming:
+                summary: Non-streaming request
+                value:
+                  model: openai/gpt-4o
+                  messages:
+                    - role: user
+                      content: Hello!
+              streaming:
+                summary: Streaming request
+                value:
+                  model: anthropic/claude-opus-4-5
+                  messages:
+                    - role: user
+                      content: Write a haiku about routing.
+                  stream: true
+      responses:
+        "200":
+          description: |
+            Non-streaming: complete chat completion object.
+            Streaming: `text/event-stream` SSE stream.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/ChatStreamChunk'
+        "400":
+          description: Bad request (missing model, invalid JSON, etc.)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized — missing or invalid API key (when requireApiKey is enabled)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No active credentials for the requested provider
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: All provider accounts rate-limited or unavailable
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── Claude ──────────────────────────────────────────────────────────────────
+
+  /v1/messages:
+    post:
+      tags: [Claude]
+      summary: Messages API (Anthropic/Claude-compatible)
+      description: |
+        Anthropic-style messages endpoint. Accepts either native Anthropic
+        request format or OpenAI chat format — the translator auto-detects
+        the source format based on the endpoint URL and body structure.
+
+        Internally handled by the same `handleChat` pipeline as
+        `/v1/chat/completions`.
+
+        **Streaming:** Set `stream: true`. Response is SSE with the same
+        OpenAI-chunk format (9Router normalizes to OpenAI format internally).
+      security:
+        - BearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+            examples:
+              anthropic_native:
+                summary: Anthropic-style request
+                value:
+                  model: anthropic/claude-opus-4-5
+                  max_tokens: 1024
+                  messages:
+                    - role: user
+                      content: Hello, Claude!
+      responses:
+        "200":
+          description: Chat completion (non-streaming or SSE stream)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/ChatStreamChunk'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /v1/messages/count_tokens:
+    post:
+      tags: [Claude]
+      summary: Count input tokens (Anthropic-compatible, mock)
+      description: |
+        Anthropic-compatible token counting endpoint. Returns an estimated
+        `input_tokens` count based on a character-count heuristic (~4 chars/token).
+
+        This is a **mock implementation** — it does not call any upstream provider.
+        It is provided for compatibility with clients (e.g., Claude Code) that
+        call this endpoint before sending requests.
+      security:
+        - BearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CountTokensRequest'
+            example:
+              model: anthropic/claude-opus-4-5
+              messages:
+                - role: user
+                  content: How many tokens is this message?
+      responses:
+        "200":
+          description: Token count estimate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CountTokensResponse'
+              example:
+                input_tokens: 12
+        "400":
+          description: Invalid JSON body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── Responses ───────────────────────────────────────────────────────────────
+
+  /v1/responses:
+    post:
+      tags: [Responses]
+      summary: OpenAI Responses API
+      description: |
+        OpenAI Responses API endpoint. Accepts the Responses API request format
+        (with `input` and `instructions` fields) and routes through the same
+        `handleChat` pipeline as `/v1/chat/completions`.
+
+        The translator auto-detects `openai-responses` format by the endpoint
+        path and converts to the internal format.
+
+        **Route alias:** `/codex/*` rewrites to this endpoint, enabling Codex CLI
+        and other tools that use the Responses API to connect without configuration.
+
+        **Streaming:** Set `stream: true` for SSE chunks.
+      security:
+        - BearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResponsesRequest'
+            examples:
+              basic:
+                summary: Basic Responses API request
+                value:
+                  model: openai/gpt-4o
+                  input: Tell me a joke.
+              with_instructions:
+                summary: With system instructions
+                value:
+                  model: openai/gpt-4o
+                  instructions: You are a helpful assistant.
+                  input:
+                    - role: user
+                      content: What is the capital of France?
+      responses:
+        "200":
+          description: Responses API reply or SSE stream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/ChatStreamChunk'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /v1/responses/compact:
+    post:
+      tags: [Responses]
+      summary: Compact conversation context
+      description: |
+        Triggers a context compaction pass over the conversation. Internally
+        adds `_compact: true` to the body and routes through the same
+        `handleChat` pipeline.
+
+        Used by clients (e.g., Claude Code) to request a summarized/compressed
+        context before continuing a long conversation.
+
+        Request and response shapes are identical to `/v1/responses`.
+      security:
+        - BearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResponsesRequest'
+      responses:
+        "200":
+          description: Compacted context response or SSE stream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/ChatStreamChunk'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Embeddings ───────────────────────────────────────────────────────────────
+
+  /v1/embeddings:
+    post:
+      tags: [Embeddings]
+      summary: Create text embeddings (OpenAI-compatible)
+      description: |
+        OpenAI-compatible text embeddings endpoint. Routes the request to the
+        configured embedding provider and returns float vectors.
+
+        The `model` field must reference an embedding model (kind `embedding`).
+        Use `/v1/models/embedding` to list available embedding models.
+      security:
+        - BearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmbeddingRequest'
+            example:
+              model: openai/text-embedding-3-small
+              input: The quick brown fox
+      responses:
+        "200":
+          description: Embedding vectors
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbeddingResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  # ── Images ───────────────────────────────────────────────────────────────────
+
+  /v1/images/generations:
+    post:
+      tags: [Images]
+      summary: Generate images (OpenAI-compatible)
+      description: |
+        OpenAI-compatible image generation endpoint. Routes to the configured
+        image provider (e.g., OpenAI DALL·E, Stability AI, Flux via Replicate,
+        SD WebUI, ComfyUI).
+
+        **Streaming progress:** For providers that support incremental progress
+        updates, send `Accept: text/event-stream` to receive SSE progress events.
+        Not all providers support this.
+
+        **Connection selection:** Optionally pass `X-Connection-Id` header to
+        pin the request to a specific provider connection.
+
+        The `model` field must reference an image generation model (kind `image`).
+        Use `/v1/models/image` to list available image models.
+      security:
+        - BearerAuth: []
+        - {}
+      parameters:
+        - name: response_format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [binary]
+          description: >
+            If set to `binary`, returns raw image bytes instead of the standard
+            JSON wrapper. Useful for direct binary streaming.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageGenerationRequest'
+            example:
+              model: openai/dall-e-3
+              prompt: A futuristic city at night with neon lights
+              size: 1024x1024
+      responses:
+        "200":
+          description: Generated image(s)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageGenerationResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  # ── Audio ────────────────────────────────────────────────────────────────────
+
+  /v1/audio/speech:
+    post:
+      tags: [Audio]
+      summary: Text-to-speech (OpenAI-compatible)
+      description: |
+        OpenAI-compatible TTS endpoint. Converts text to audio using the
+        specified TTS voice/model.
+
+        The `model` field must reference a TTS model in `{providerAlias}/{voiceId}`
+        format. Use `/v1/audio/voices?provider={p}` to list available voices, or
+        `/v1/models/tts` to list TTS models.
+
+        **Supported providers** (non-exhaustive): ElevenLabs, OpenAI TTS,
+        Deepgram Aura, MiniMax, Inworld, Edge TTS, Gemini TTS, local device.
+
+        **Response format:** Returns binary audio (MP3 by default).
+        Use `?response_format=json` to receive a JSON wrapper instead.
+      security:
+        - BearerAuth: []
+        - {}
+      parameters:
+        - name: response_format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [mp3, json]
+            default: mp3
+          description: Audio response format.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TtsRequest'
+            example:
+              model: openai/alloy
+              input: Hello, this is a test of the text-to-speech API.
+      responses:
+        "200":
+          description: Audio output
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+            application/json:
+              description: JSON wrapper (when `response_format=json`)
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /v1/audio/transcriptions:
+    post:
+      tags: [Audio]
+      summary: Transcribe audio (OpenAI Whisper-compatible)
+      description: |
+        OpenAI Whisper-compatible speech-to-text endpoint. Accepts
+        `multipart/form-data` with an audio file and a model identifier.
+
+        The `model` field must reference an STT model (kind `stt`).
+        Use `/v1/models/stt` to list available speech-to-text models.
+
+        **Max processing time:** 300 seconds (for large audio files).
+      security:
+        - BearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - model
+                - file
+              properties:
+                model:
+                  type: string
+                  description: STT model in `{providerAlias}/{modelId}` format.
+                  example: openai/whisper-1
+                file:
+                  type: string
+                  format: binary
+                  description: Audio file to transcribe.
+                language:
+                  type: string
+                  description: BCP-47 language code hint.
+                prompt:
+                  type: string
+                  description: Optional prompt to guide transcription.
+            example:
+              model: openai/whisper-1
+      responses:
+        "200":
+          description: Transcription result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptionResponse'
+              example:
+                text: Hello, this is a test transcription.
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /v1/audio/voices:
+    get:
+      tags: [Audio]
+      summary: List available TTS voices
+      description: |
+        Returns available voices for a given TTS provider in OpenAI-compatible
+        list format. Each voice object includes a ready-to-use `model` field
+        for the `/v1/audio/speech` endpoint.
+
+        Supported providers with dynamic voice lists: `elevenlabs`, `deepgram`,
+        `inworld`, `edge-tts`, `local-device`.
+
+        Optionally filter by language with the `lang` query parameter.
+      security:
+        - BearerAuth: []
+        - {}
+      parameters:
+        - name: provider
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [elevenlabs, deepgram, inworld, edge-tts, local-device]
+          description: TTS provider to list voices for.
+          example: elevenlabs
+        - name: lang
+          in: query
+          required: false
+          schema:
+            type: string
+          description: BCP-47 language code to filter voices.
+          example: en
+      responses:
+        "200":
+          description: Voice list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object:
+                    type: string
+                    example: list
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/VoiceObject'
+              example:
+                object: list
+                data:
+                  - id: Rachel
+                    name: Rachel
+                    lang: en
+                    gender: female
+                    model: el/Rachel
+        "400":
+          description: Missing or unsupported provider
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "502":
+          description: Upstream voice API error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── Search ───────────────────────────────────────────────────────────────────
+
+  /v1/search:
+    post:
+      tags: [Search]
+      summary: Web search
+      description: |
+        Performs a web search using a configured search provider.
+
+        The `provider` (or `model`) field selects the search provider.
+        Use `/v1/models/web` to list available search and fetch models.
+
+        **Supported providers** (non-exhaustive): Brave, Tavily, Serper,
+        Google Custom Search, SearXNG (no-auth), Bing, DuckDuckGo.
+
+        **Combo support:** `provider`/`model` may refer to a named combo —
+        9Router will apply fallback or round-robin across the combo's providers.
+
+        **Authentication:** Required only when `requireApiKey` is enabled.
+      security:
+        - BearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+            example:
+              model: brave/search
+              query: latest AI news
+              max_results: 5
+      responses:
+        "200":
+          description: Search results (schema varies by provider)
+          content:
+            application/json:
+              schema:
+                type: object
+                description: >
+                  Search results. Schema varies by provider. Common fields include
+                  `results` (array of result objects with `title`, `url`, `description`).
+                additionalProperties: true
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  # ── Web Fetch ────────────────────────────────────────────────────────────────
+
+  /v1/web/fetch:
+    post:
+      tags: [Web Fetch]
+      summary: Fetch and extract web page content
+      description: |
+        Fetches a URL and extracts its text content via a configured web
+        fetch provider (e.g., Jina, Firecrawl).
+
+        The `provider` (or `model`) field selects the fetch provider.
+        Use `/v1/models/web` to list available fetch models.
+
+        **Combo support:** `provider`/`model` may refer to a named combo.
+
+        **Authentication:** Required only when `requireApiKey` is enabled.
+      security:
+        - BearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebFetchRequest'
+            example:
+              model: jina/fetch
+              url: https://en.wikipedia.org/wiki/Artificial_intelligence
+              format: markdown
+              max_characters: 5000
+      responses:
+        "200":
+          description: Extracted page content (schema varies by provider)
+          content:
+            application/json:
+              schema:
+                type: object
+                description: >
+                  Extracted content. Common fields: `content` (string), `title` (string),
+                  `url` (string). Schema varies by provider.
+                additionalProperties: true
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  # ── Compatibility / Beta ─────────────────────────────────────────────────────
+
+  /v1/api/chat:
+    post:
+      tags: [Compatibility]
+      summary: Ollama-compatible chat endpoint
+      description: |
+        Ollama API compatibility endpoint (`/api/chat`). Accepts an OpenAI-style
+        chat request and transforms the response to Ollama response format.
+
+        This endpoint is accessible at `/v1/api/chat` (via the `/v1/*` rewrite).
+        Ollama clients that set their base URL to `http://localhost:20128/v1`
+        will route their `/api/chat` calls here.
+
+        The `model` field defaults to `llama3.2` if not provided.
+
+        Internally uses the same `handleChat` pipeline, then wraps the response
+        using `transformToOllama`.
+      security:
+        - BearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+            example:
+              model: openai/gpt-4o
+              messages:
+                - role: user
+                  content: Why is the sky blue?
+      responses:
+        "200":
+          description: Ollama-format chat response
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Ollama GenerateResponse format.
+                additionalProperties: true
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1beta/models:
+    get:
+      tags: [Compatibility]
+      summary: List models (Gemini API-compatible)
+      description: |
+        Returns all provider models in Gemini API list format (`{ models: [...] }`).
+        Each model entry includes `name`, `displayName`, `description`,
+        `supportedGenerationMethods`, `inputTokenLimit`, and `outputTokenLimit`.
+
+        The `name` field uses the `models/{provider}/{modelId}` resource format.
+
+        Intended for clients using the Google Gemini SDK or Gemini CLI.
+      security:
+        - BearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: Gemini-format model list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  models:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GeminiModelObject'
+              example:
+                models:
+                  - name: models/openai/gpt-4o
+                    displayName: GPT-4o
+                    description: "openai model: GPT-4o"
+                    supportedGenerationMethods: [generateContent]
+                    inputTokenLimit: 128000
+                    outputTokenLimit: 8192
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1beta/models/{model}:generateContent:
+    post:
+      tags: [Compatibility]
+      summary: Generate content (Gemini API, non-streaming)
+      description: |
+        Gemini API-compatible generate content endpoint (non-streaming).
+
+        Accepts a Gemini `GenerateContentRequest` body and returns a
+        `GenerateContentResponse`. Internally converts to OpenAI format,
+        routes through `handleChat`, and converts the response back to
+        Gemini format.
+
+        Two path formats are accepted:
+        - `/v1beta/models/{modelId}:generateContent`
+        - `/v1beta/models/{provider}/{modelId}:generateContent`
+
+        Intended for Gemini CLI and `@google/genai` SDK clients.
+      security:
+        - BearerAuth: []
+        - {}
+      parameters:
+        - name: model
+          in: path
+          required: true
+          schema:
+            type: string
+          description: >
+            Model path segment, e.g. `gemini/gemini-2.0-flash:generateContent`
+            or `gemini-2.0-flash:generateContent`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GeminiGenerateRequest'
+            example:
+              contents:
+                - role: user
+                  parts:
+                    - text: Hello, Gemini!
+      responses:
+        "200":
+          description: Gemini GenerateContentResponse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeminiGenerateResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1beta/models/{model}:streamGenerateContent:
+    post:
+      tags: [Compatibility]
+      summary: Stream generate content (Gemini API, SSE)
+      description: |
+        Gemini API-compatible streaming endpoint. Returns server-sent events
+        in Gemini SSE format (NOT OpenAI format).
+
+        Each SSE event is:
+        ```
+        data: {"candidates":[{"content":{"role":"model","parts":[{"text":"..."}]},"index":0}]}\n\n
+        ```
+        The stream ends by closing (no `[DONE]` sentinel — Gemini SDK expects
+        stream close as the end signal).
+
+        Two path formats are accepted:
+        - `/v1beta/models/{modelId}:streamGenerateContent`
+        - `/v1beta/models/{provider}/{modelId}:streamGenerateContent`
+
+        The `@google/genai` SDK always uses `:streamGenerateContent?alt=sse` for chat.
+      security:
+        - BearerAuth: []
+        - {}
+      parameters:
+        - name: model
+          in: path
+          required: true
+          schema:
+            type: string
+          description: >
+            Model path segment, e.g. `gemini/gemini-2.0-flash:streamGenerateContent`.
+        - name: alt
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [sse]
+          description: >
+            `alt=sse` is accepted and ignored — the response is always SSE for
+            this endpoint.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GeminiGenerateRequest'
+            example:
+              contents:
+                - role: user
+                  parts:
+                    - text: Tell me a short story.
+      responses:
+        "200":
+          description: Gemini SSE stream (stream closes on completion, no [DONE])
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/GeminiGenerateResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+
