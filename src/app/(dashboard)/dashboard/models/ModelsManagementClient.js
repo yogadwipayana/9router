@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Badge, Button, Card, CardSkeleton, Toggle } from "@/shared/components";
+import { Badge, Button, Card, CardSkeleton, Skeleton, Toggle } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import {
   ANTHROPIC_COMPATIBLE_PREFIX,
@@ -322,71 +322,93 @@ export default function ModelsManagementClient() {
 
   if (loading) {
     return (
-      <div className="flex flex-col gap-4">
-        <CardSkeleton />
-        <CardSkeleton />
+      <div className="flex flex-col gap-6">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {[...Array(4)].map((_, i) => (
+            <Skeleton key={i} className="h-[76px] rounded-[14px]" />
+          ))}
+        </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          <CardSkeleton />
+          <CardSkeleton />
+          <CardSkeleton />
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex min-w-0 flex-col gap-5 px-1 sm:px-0">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            <Badge variant="info" size="sm" dot>
-              {catalog.totals.providers} Providers
-            </Badge>
-            <Badge variant="success" size="sm" dot>
-              {catalog.totals.enabledModels} Enabled models
-            </Badge>
-            <Badge variant={catalog.totals.disabled > 0 ? "warning" : "default"} size="sm" dot>
-              {catalog.totals.disabled} Model disabled
-            </Badge>
-            <Badge variant={catalog.totals.disabledProviders > 0 ? "error" : "default"} size="sm" dot>
-              {catalog.totals.disabledProviders} Provider disabled
-            </Badge>
-          </div>
-        </div>
-        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-          <div className="relative w-full sm:w-auto">
-            <span className="material-symbols-outlined pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[15px] text-text-muted">
-              sort
-            </span>
-            <select
-              value={sortOrder}
-              onChange={(e) => setSortOrder(e.target.value)}
-              className="w-full appearance-none rounded-[10px] border border-transparent bg-surface-2 py-2 pl-8 pr-8 text-sm text-text-main transition-all focus:outline-none focus:ring-2 focus:ring-brand-500/30 sm:w-auto"
-            >
-              {SORT_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-            <span className="material-symbols-outlined pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[16px] text-text-muted">
-              expand_more
-            </span>
-          </div>
-          <Button
-            variant="secondary"
-            icon="refresh"
-            onClick={() => fetchCatalog({ quiet: true })}
-            loading={refreshing}
-            className="w-full sm:w-auto"
+    <div className="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
+      {/* Summary stats */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <SummaryMetric
+          icon="dns"
+          label="Providers"
+          value={catalog.totals.providers}
+          variant="info"
+        />
+        <SummaryMetric
+          icon="check_circle"
+          label="Enabled Models"
+          value={catalog.totals.enabledModels}
+          variant="success"
+        />
+        <SummaryMetric
+          icon="visibility_off"
+          label="Disabled Models"
+          value={catalog.totals.disabled}
+          variant={catalog.totals.disabled > 0 ? "warning" : "default"}
+        />
+        <SummaryMetric
+          icon="block"
+          label="Off Providers"
+          value={catalog.totals.disabledProviders}
+          variant={catalog.totals.disabledProviders > 0 ? "error" : "default"}
+        />
+      </div>
+
+      {/* Toolbar */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
+        <div className="relative w-full sm:w-auto">
+          <span className="material-symbols-outlined pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[15px] text-text-muted">
+            sort
+          </span>
+          <select
+            value={sortOrder}
+            onChange={(e) => setSortOrder(e.target.value)}
+            className="w-full appearance-none rounded-[10px] border border-transparent bg-surface-2 py-2 pl-8 pr-8 text-sm text-text-main transition-all focus:outline-none focus:ring-2 focus:ring-brand-500/30 sm:w-auto"
           >
-            Refresh
-          </Button>
+            {SORT_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <span className="material-symbols-outlined pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[16px] text-text-muted">
+            expand_more
+          </span>
         </div>
+        <Button
+          variant="secondary"
+          icon="refresh"
+          onClick={() => fetchCatalog({ quiet: true })}
+          loading={refreshing}
+          className="w-full sm:w-auto"
+        >
+          Refresh
+        </Button>
       </div>
 
       {filteredProviders.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-text-muted">
-          <span className="material-symbols-outlined mb-2 block text-[32px]">search_off</span>
-          No models found
+        <div className="rounded-xl border border-dashed border-border p-10 text-center">
+          <span className="material-symbols-outlined mb-3 block text-[40px] text-text-muted">
+            search_off
+          </span>
+          <p className="text-sm font-medium text-text-main">No models found</p>
+          <p className="mt-1 text-xs text-text-muted">Try adjusting your search or sort settings</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {filteredProviders.map((group) => (
             <ProviderModelCard
               key={group.provider.id}
@@ -406,6 +428,31 @@ export default function ModelsManagementClient() {
         </div>
       )}
     </div>
+  );
+}
+
+function SummaryMetric({ icon, label, value, variant = "default" }) {
+  const iconStyles = {
+    default: { icon: "text-text-muted", bg: "bg-surface-2" },
+    info: { icon: "text-blue-500", bg: "bg-blue-500/10" },
+    success: { icon: "text-green-500", bg: "bg-green-500/10" },
+    warning: { icon: "text-yellow-500", bg: "bg-yellow-500/10" },
+    error: { icon: "text-red-500", bg: "bg-red-500/10" },
+  };
+  const { icon: iconCls, bg: bgCls } = iconStyles[variant] || iconStyles.default;
+
+  return (
+    <Card padding="sm">
+      <div className="flex items-center gap-3">
+        <div className={`shrink-0 rounded-[10px] p-2.5 ${bgCls}`}>
+          <span className={`material-symbols-outlined text-[22px] ${iconCls}`}>{icon}</span>
+        </div>
+        <div className="min-w-0">
+          <div className="text-2xl font-bold tabular-nums text-text-main leading-none">{value}</div>
+          <div className="mt-0.5 text-xs text-text-muted truncate">{label}</div>
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -433,29 +480,30 @@ function ProviderModelCard({
 
   return (
     <Card
-      padding="xs"
-      className={`h-fit transition-colors ${providerDisabled ? "opacity-70" : "hover:bg-black/[0.01] dark:hover:bg-white/[0.01]"}`}
+      padding="sm"
+      className={`h-fit transition-opacity ${providerDisabled ? "opacity-60" : ""}`}
     >
+      {/* Provider header */}
       <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
           <div
-            className="flex size-9 shrink-0 items-center justify-center rounded-lg"
-            style={{ backgroundColor: provider.color?.length > 7 ? provider.color : `${provider.color || "#6b7280"}15` }}
+            className="flex size-10 shrink-0 items-center justify-center rounded-[10px]"
+            style={{ backgroundColor: provider.color?.length > 7 ? provider.color : `${provider.color || "#6b7280"}18` }}
           >
             <ProviderIcon
               src={iconPath}
               alt={provider.name}
-              size={32}
-              className="max-h-8 max-w-8 rounded-lg object-contain"
+              size={28}
+              className="max-h-7 max-w-7 rounded-md object-contain"
               fallbackText={provider.textIcon || provider.alias?.slice(0, 2).toUpperCase()}
               fallbackColor={provider.color}
             />
           </div>
           <div className="min-w-0">
             <h2 className="truncate text-sm font-semibold text-text-main">{provider.name}</h2>
-            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
+            <div className="mt-1 flex flex-wrap items-center gap-1.5">
               <Badge variant={providerDisabled ? "error" : "success"} size="sm" dot>
-                {providerDisabled ? "Provider off" : "Provider on"}
+                {providerDisabled ? "Off" : "On"}
               </Badge>
               <Badge variant="default" size="sm">{provider.alias}</Badge>
               <Badge variant="default" size="sm">
@@ -472,20 +520,22 @@ function ProviderModelCard({
         />
       </div>
 
+      {/* Stats */}
       <div className="mt-4 grid grid-cols-3 gap-2">
         <Metric label="Total" value={provider.totalModels} />
         <Metric label="Enabled" value={provider.enabledModels} muted={providerDisabled} />
         <Metric label="Disabled" value={provider.disabledModels} warn={provider.disabledModels > 0} />
       </div>
 
+      {/* Status + expand toggle */}
       <div className="mt-3 flex items-center justify-between gap-3">
-        <div className="min-w-0 text-xs text-text-muted">
+        <p className="min-w-0 text-xs text-text-muted">
           {providerDisabled
             ? "Hidden from every /v1/models endpoint"
             : provider.disabledModels > 0
               ? "Some models are individually hidden"
               : "All listed models are discoverable"}
-        </div>
+        </p>
         <button
           type="button"
           onClick={onToggleExpanded}
@@ -498,23 +548,27 @@ function ProviderModelCard({
         </button>
       </div>
 
-      <div className="mt-3 divide-y divide-border-subtle rounded-[10px] border border-border-subtle bg-bg/50">
+      {/* Model list */}
+      <div className="mt-3 overflow-hidden rounded-[10px] border border-border-subtle">
         {modelPreview.map((model) => {
           const modelPendingKey = `model:${provider.alias}/${model.id}`;
           return (
-            <div key={model.clientId} className="flex min-w-0 items-center justify-between gap-3 p-3">
+            <div
+              key={model.clientId}
+              className="flex min-w-0 items-center justify-between gap-3 border-b border-border-subtle p-3 last:border-b-0 hover:bg-surface-2/40 transition-colors"
+            >
               <div className="min-w-0">
                 <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                   <code className="max-w-full break-all rounded bg-surface px-1.5 py-0.5 text-[11px] font-semibold text-text-main">
                     {model.clientId}
                   </code>
                   <Badge variant={model.disabled ? "warning" : "success"} size="sm" dot>
-                    {model.disabled ? "Model off" : "Model on"}
+                    {model.disabled ? "Off" : "On"}
                   </Badge>
                 </div>
-                <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-text-muted">
+                <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-text-muted">
                   <span className="truncate">{model.name}</span>
-                  <span>-</span>
+                  <span className="text-border-subtle">·</span>
                   <span>{modelTypeLabel(model.type)}</span>
                 </div>
               </div>
@@ -531,7 +585,7 @@ function ProviderModelCard({
           <button
             type="button"
             onClick={onToggleExpanded}
-            className="flex w-full items-center justify-center gap-1.5 p-2 text-xs font-semibold text-text-muted transition hover:bg-surface-2 hover:text-text-main"
+            className="flex w-full items-center justify-center gap-1.5 p-2.5 text-xs font-semibold text-text-muted transition hover:bg-surface-2/50 hover:text-text-main"
           >
             Show {group.models.length - modelPreview.length} more
             <span className="material-symbols-outlined text-[15px]">expand_more</span>
@@ -544,11 +598,11 @@ function ProviderModelCard({
 
 function Metric({ label, value, muted = false, warn = false }) {
   return (
-    <div className="rounded-lg border border-border-subtle bg-bg px-2 py-2">
+    <div className="rounded-[8px] border border-border-subtle bg-bg px-2.5 py-2">
       <div className={`text-base font-semibold tabular-nums ${warn ? "text-yellow-600 dark:text-yellow-400" : muted ? "text-text-muted" : "text-text-main"}`}>
         {value}
       </div>
-      <div className="text-[10px] font-medium uppercase text-text-muted">{label}</div>
+      <div className="text-[10px] font-medium uppercase tracking-wide text-text-muted">{label}</div>
     </div>
   );
 }

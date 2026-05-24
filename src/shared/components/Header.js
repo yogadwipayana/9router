@@ -167,6 +167,13 @@ const getPageInfo = (pathname) => {
       icon: "monitor",
       breadcrumbs: [],
     };
+  if (pathname.includes("/models"))
+    return {
+      title: "Models",
+      description: "Enable or disable models and providers for your API endpoints",
+      icon: "auto_awesome",
+      breadcrumbs: [],
+    };
   if (pathname === "/dashboard")
     return {
       title: "Endpoint",
