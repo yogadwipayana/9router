@@ -139,6 +139,13 @@ const getPageInfo = (pathname) => {
       icon: "api",
       breadcrumbs: [],
     };
+  if (pathname.includes("/pricing"))
+    return {
+      title: "Pricing",
+      description: "Configure pricing rates for cost tracking and calculations",
+      icon: "sell",
+      breadcrumbs: [],
+    };
   if (pathname.includes("/profile"))
     return {
       title: "Settings",

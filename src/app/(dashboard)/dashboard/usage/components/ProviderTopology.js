@@ -252,17 +252,20 @@ export default function ProviderTopology({ providers = [], activeRequests = [], 
 
   const rfInstance = useRef(null);
   const containerRef = useRef(null);
+  const [containerReady, setContainerReady] = useState(false);
   const fitOpts = { padding: 0.2, duration: 200 };
   const onInit = useCallback((instance) => {
     rfInstance.current = instance;
     setTimeout(() => instance.fitView(fitOpts), 50);
   }, []);
 
-  // Re-fit on container resize
+  // Mark container ready once it has dimensions; re-fit on resize
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => {
+    const ro = new ResizeObserver((entries) => {
+      const { width, height } = entries[0].contentRect;
+      if (width > 0 && height > 0) setContainerReady(true);
       if (rfInstance.current) rfInstance.current.fitView(fitOpts);
     });
     ro.observe(el);
@@ -283,7 +286,7 @@ export default function ProviderTopology({ providers = [], activeRequests = [], 
         <div className="h-full flex items-center justify-center text-text-muted text-sm">
           No providers connected
         </div>
-      ) : (
+      ) : containerReady ? (
         <ReactFlow
           key={providersKey}
           nodes={nodes}
@@ -306,7 +309,7 @@ export default function ProviderTopology({ providers = [], activeRequests = [], 
         >
           <Controls showInteractive={false} className="react-flow-controls-custom" />
         </ReactFlow>
-      )}
+      ) : null}
     </div>
   );
 }
