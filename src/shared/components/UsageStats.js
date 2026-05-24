@@ -49,13 +49,20 @@ function RecentRequests({ requests = [] }) {
         <div className="flex-1 flex items-center justify-center text-text-muted text-sm">No requests yet.</div>
       ) : (
         <div className="flex-1 overflow-y-auto">
-          <table className="w-full min-w-[300px] border-collapse text-xs">
+          <table className="w-full table-fixed border-collapse text-xs">
+            <colgroup>
+              <col style={{ width: 16 }} />
+              <col style={{ width: 100 }} />
+              <col style={{ width: 100 }} />
+              <col style={{ width: 100 }} />
+              <col style={{ width: 100 }} />
+            </colgroup>
             <thead className="sticky top-0 bg-bg z-10">
               <tr className="border-b border-border">
-                <th className="py-1.5 text-left font-semibold text-text-muted w-2"></th>
+                <th className="py-1.5 text-left font-semibold text-text-muted"></th>
                 <th className="py-1.5 text-left font-semibold text-text-muted">Model</th>
-                <th className="py-1.5 text-left font-semibold text-text-muted">API Key</th>
-                <th className="py-1.5 text-right font-semibold text-text-muted whitespace-nowrap">In / Out</th>
+                <th className="py-1.5 text-left font-semibold text-text-muted pl-3">API Key</th>
+                <th className="py-1.5 text-right font-semibold text-text-muted pl-3">In / Out</th>
                 <th className="py-1.5 text-right font-semibold text-text-muted">When</th>
               </tr>
             </thead>
@@ -68,9 +75,9 @@ function RecentRequests({ requests = [] }) {
                     <td className="py-1.5">
                       <span className={`block w-1.5 h-1.5 rounded-full ${ok ? "bg-success" : "bg-error"}`} />
                     </td>
-                    <td className="py-1.5 font-mono truncate max-w-[120px]" title={r.model}>{r.model}</td>
-                    <td className="py-1.5 truncate max-w-[100px] text-text-muted" title={keyLabel}>{keyLabel}</td>
-                    <td className="py-1.5 text-right whitespace-nowrap">
+                    <td className="py-1.5 font-mono truncate max-w-[160px]" title={r.model}>{r.model}</td>
+                    <td className="py-1.5 pl-3 whitespace-nowrap text-text-muted" title={keyLabel}>{keyLabel}</td>
+                    <td className="py-1.5 pl-3 text-right whitespace-nowrap">
                       <span className="text-primary">{fmt(r.promptTokens)}↑</span>
                       {" "}
                       <span className="text-success">{fmt(r.completionTokens)}↓</span>
@@ -439,7 +446,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
 
       {/* Provider topology + Recent Requests */}
       {loading ? spinner : (
-        <div className="grid min-w-0 grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
+        <div className="grid min-w-0 grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,3fr)_minmax(360px,2fr)]">
           <ProviderTopology
             providers={providers}
             activeRequests={stats.activeRequests || []}
