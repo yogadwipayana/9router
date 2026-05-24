@@ -37,6 +37,11 @@ const systemItems = [
   { href: "/dashboard/skills", label: "Skills", icon: "extension" },
 ];
 
+const adminItems = [
+  { href: "/dashboard/api-key", label: "API Key", icon: "key" },
+  { href: "/dashboard/models", label: "Models", icon: "model_training" },
+];
+
 export default function Sidebar({ onClose }) {
   const pathname = usePathname();
   const [mediaOpen, setMediaOpen] = useState(false);
@@ -323,6 +328,37 @@ export default function Sidebar({ onClose }) {
               </span>
               <span className="text-[13px] font-medium">Settings</span>
             </Link>
+          </div>
+
+          {/* Admin section */}
+          <div className="pt-3 mt-2 space-y-0.5">
+            <p className="px-4 text-xs font-semibold text-text-muted/60 uppercase tracking-wider mb-2">
+              ADMIN
+            </p>
+
+            {adminItems.map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={onClose}
+                className={cn(
+                  "flex items-center gap-3 px-3 py-1 rounded-lg transition-all group",
+                  isActive(item.href)
+                    ? "bg-primary/10 text-primary"
+                    : "text-text-muted hover:bg-surface-2 hover:text-text-main"
+                )}
+              >
+                <span
+                  className={cn(
+                    "material-symbols-outlined text-[18px]",
+                    isActive(item.href) ? "fill-1" : "group-hover:text-primary transition-colors"
+                  )}
+                >
+                  {item.icon}
+                </span>
+                <span className="text-[13px] font-medium">{item.label}</span>
+              </Link>
+            ))}
           </div>
         </nav>
 
