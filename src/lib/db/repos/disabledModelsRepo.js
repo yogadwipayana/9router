@@ -2,6 +2,7 @@ import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
 const SCOPE = "disabledModels";
+const PROVIDER_SCOPE = "disabledProviders";
 
 export async function getDisabledModels() {
   const db = await getAdapter();
@@ -53,4 +54,31 @@ export async function enableModels(providerAlias, ids) {
       );
     }
   });
+}
+
+export async function getDisabledProviders() {
+  const db = await getAdapter();
+  const rows = db.all(`SELECT key, value FROM kv WHERE scope = ?`, [PROVIDER_SCOPE]);
+  const out = {};
+  for (const r of rows) out[r.key] = parseJson(r.value, true) !== false;
+  return out;
+}
+
+export async function disableProvider(providerAlias) {
+  if (!providerAlias) return;
+  const db = await getAdapter();
+  db.run(
+    `INSERT INTO kv(scope, key, value) VALUES(?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`,
+    [PROVIDER_SCOPE, providerAlias, stringifyJson(true)]
+  );
+}
+
+export async function enableProvider(providerAlias) {
+  if (!providerAlias) return;
+  const db = await getAdapter();
+  db.run(`DELETE FROM kv WHERE scope = ? AND key = ?`, [PROVIDER_SCOPE, providerAlias]);
+}
+
+export function isProviderDisabled(disabledProviders, ...aliases) {
+  return aliases.some((alias) => alias && disabledProviders?.[alias] === true);
 }

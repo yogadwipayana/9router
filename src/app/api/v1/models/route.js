@@ -1,12 +1,16 @@
 import { PROVIDER_MODELS, PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
 import {
   AI_PROVIDERS,
+  APIKEY_PROVIDERS,
+  FREE_PROVIDERS,
+  FREE_TIER_PROVIDERS,
   getProviderAlias,
   isAnthropicCompatibleProvider,
   isOpenAICompatibleProvider,
+  OAUTH_PROVIDERS,
 } from "@/shared/constants/providers";
-import { getProviderConnections, getCombos, getCustomModels, getModelAliases } from "@/lib/localDb";
-import { getDisabledModels } from "@/lib/disabledModelsDb";
+import { getProviderConnections, getCombos, getCustomModels, getModelAliases, getProviderNodes } from "@/lib/localDb";
+import { getDisabledModels, getDisabledProviders, isProviderDisabled } from "@/lib/disabledModelsDb";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 
 // Per-provider live model resolvers. Each receives a connection record and
@@ -26,6 +30,40 @@ const LIVE_MODEL_RESOLVERS = {
 const NO_AUTH_PROVIDER_IDS = Object.entries(AI_PROVIDERS)
   .filter(([, provider]) => provider?.noAuth === true)
   .map(([providerId]) => providerId);
+
+const DASHBOARD_PROVIDER_NODE_TYPES = new Set([
+  "openai-compatible",
+  "anthropic-compatible",
+]);
+
+function getDashboardStaticProviderIds() {
+  const providerIds = new Set();
+  for (const group of [FREE_PROVIDERS, FREE_TIER_PROVIDERS, OAUTH_PROVIDERS]) {
+    for (const [providerId, provider] of Object.entries(group)) {
+      if (!provider.hidden) providerIds.add(providerId);
+    }
+  }
+  for (const [providerId, provider] of Object.entries(APIKEY_PROVIDERS)) {
+    const kinds = provider.serviceKinds ?? ["llm"];
+    if (!provider.hidden && kinds.includes("llm")) providerIds.add(providerId);
+  }
+  return providerIds;
+}
+
+async function getDashboardModelsProviderIds() {
+  const providerIds = getDashboardStaticProviderIds();
+  try {
+    const nodes = await getProviderNodes();
+    for (const node of nodes) {
+      if (node?.id && DASHBOARD_PROVIDER_NODE_TYPES.has(node.type)) {
+        providerIds.add(node.id);
+      }
+    }
+  } catch (error) {
+    console.log("Could not fetch provider nodes for model catalog:", error);
+  }
+  return providerIds;
+}
 
 const parseOpenAIStyleModels = (data) => {
   if (Array.isArray(data)) return data;
@@ -217,6 +255,13 @@ export async function buildModelsList(kindFilter) {
   }
   const isDisabled = (alias, modelId) => isModelDisabled(disabledByAlias, alias, modelId);
 
+  let disabledProviders = {};
+  try {
+    disabledProviders = await getDisabledProviders();
+  } catch (e) {
+    console.log("Could not fetch disabled providers");
+  }
+
   const activeConnectionByProvider = new Map();
   for (const conn of connections) {
     if (!activeConnectionByProvider.has(conn.provider)) {
@@ -248,6 +293,7 @@ export async function buildModelsList(kindFilter) {
     for (const [alias, providerModels] of Object.entries(PROVIDER_MODELS)) {
       const providerId = aliasToProviderId[alias] || alias;
       if (!providerMatchesKinds(providerId, kindFilter)) continue;
+      if (isProviderDisabled(disabledProviders, alias, providerId)) continue;
       for (const model of providerModels) {
         if (!kindFilter.includes(modelKind(model))) continue;
         if (isDisabled(alias, model.id)) continue;
@@ -287,6 +333,7 @@ export async function buildModelsList(kindFilter) {
       ).trim();
       const providerModels = PROVIDER_MODELS[staticAlias] || [];
       const providerInfo = AI_PROVIDERS[providerId] || {};
+      if (isProviderDisabled(disabledProviders, outputAlias, staticAlias, providerId)) continue;
       const enabledModels = conn?.providerSpecificData?.enabledModels;
       const hasExplicitEnabledModels =
         Array.isArray(enabledModels) && enabledModels.length > 0;
@@ -489,10 +536,12 @@ function getProviderDisplay(providerId, connection, outputAlias) {
     color: providerInfo.color || "#6b7280",
     textIcon: providerInfo.textIcon || outputAlias?.slice(0, 2).toUpperCase() || "AI",
     authType: connection?.authType || (providerInfo.noAuth ? "none" : "unknown"),
+    apiType: connection?.providerSpecificData?.apiType,
   };
 }
 
 export async function buildModelManagementCatalog() {
+  const dashboardProviderIds = await getDashboardModelsProviderIds();
   let connections = [];
   try {
     connections = await getProviderConnections();
@@ -523,6 +572,13 @@ export async function buildModelManagementCatalog() {
     console.log("Could not fetch disabled models");
   }
 
+  let disabledProviders = {};
+  try {
+    disabledProviders = await getDisabledProviders();
+  } catch (error) {
+    console.log("Could not fetch disabled providers");
+  }
+
   const activeConnectionByProvider = new Map();
   for (const conn of connections) {
     if (!activeConnectionByProvider.has(conn.provider)) {
@@ -533,6 +589,8 @@ export async function buildModelManagementCatalog() {
   const providers = [];
 
   for (const [providerId, conn] of activeConnectionByProvider.entries()) {
+    if (!dashboardProviderIds.has(providerId)) continue;
+
     const staticAlias = PROVIDER_ID_TO_ALIAS[providerId] || providerId;
     const outputAlias = (
       conn?.providerSpecificData?.prefix
@@ -541,6 +599,7 @@ export async function buildModelManagementCatalog() {
     ).trim();
     const providerModels = PROVIDER_MODELS[staticAlias] || [];
     const providerInfo = AI_PROVIDERS[providerId] || {};
+    const providerDisabled = isProviderDisabled(disabledProviders, outputAlias, staticAlias, providerId);
     const enabledModels = conn?.providerSpecificData?.enabledModels;
     const hasExplicitEnabledModels = Array.isArray(enabledModels) && enabledModels.length > 0;
     const isCompatibleProvider =
@@ -676,8 +735,15 @@ export async function buildModelManagementCatalog() {
     });
 
     if (models.length > 0) {
+      const modelDisabledCount = models.filter((model) => model.disabled).length;
       providers.push({
-        provider: getProviderDisplay(providerId, conn, outputAlias),
+        provider: {
+          ...getProviderDisplay(providerId, conn, outputAlias),
+          disabled: providerDisabled,
+          totalModels: models.length,
+          disabledModels: modelDisabledCount,
+          enabledModels: providerDisabled ? 0 : models.length - modelDisabledCount,
+        },
         models,
       });
     }
@@ -688,6 +754,7 @@ export async function buildModelManagementCatalog() {
   return {
     providers,
     disabled: disabledByAlias,
+    disabledProviders,
     totals: {
       providers: providers.length,
       models: providers.reduce((sum, group) => sum + group.models.length, 0),
@@ -695,6 +762,8 @@ export async function buildModelManagementCatalog() {
         (sum, group) => sum + group.models.filter((model) => model.disabled).length,
         0,
       ),
+      disabledProviders: providers.filter((group) => group.provider.disabled).length,
+      enabledModels: providers.reduce((sum, group) => sum + group.provider.enabledModels, 0),
     },
   };
 }

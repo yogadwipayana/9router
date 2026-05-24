@@ -53,6 +53,7 @@ export {
 // Disabled models
 export {
   getDisabledModels, getDisabledByProvider, disableModels, enableModels,
+  getDisabledProviders, disableProvider, enableProvider, isProviderDisabled,
 } from "./repos/disabledModelsRepo.js";
 
 // Usage
@@ -83,12 +84,16 @@ export async function exportDb() {
     customModels: [],
     mitmAlias: {},
     pricing: {},
+    disabledModels: {},
+    disabledProviders: {},
   };
 
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'modelAliases'`)) out.modelAliases[r.key] = parseJson(r.value);
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'customModels'`)) out.customModels.push(parseJson(r.value));
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'mitmAlias'`)) out.mitmAlias[r.key] = parseJson(r.value);
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'pricing'`)) out.pricing[r.key] = parseJson(r.value);
+  for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'disabledModels'`)) out.disabledModels[r.key] = parseJson(r.value);
+  for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'disabledProviders'`)) out.disabledProviders[r.key] = parseJson(r.value);
 
   return out;
 }
@@ -107,7 +112,7 @@ export async function importDb(payload) {
     db.run(`DELETE FROM proxyPools`);
     db.run(`DELETE FROM apiKeys`);
     db.run(`DELETE FROM combos`);
-    db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing')`);
+    db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing', 'disabledModels', 'disabledProviders')`);
 
     // Settings
     if (payload.settings) {
@@ -159,6 +164,14 @@ export async function importDb(payload) {
     }
     for (const [provider, models] of Object.entries(payload.pricing || {})) {
       db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('pricing', ?, ?)`, [provider, stringifyJson(models || {})]);
+    }
+    for (const [provider, models] of Object.entries(payload.disabledModels || {})) {
+      db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('disabledModels', ?, ?)`, [provider, stringifyJson(models || [])]);
+    }
+    for (const [provider, disabled] of Object.entries(payload.disabledProviders || {})) {
+      if (disabled === true) {
+        db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('disabledProviders', ?, ?)`, [provider, stringifyJson(true)]);
+      }
     }
   });
 
