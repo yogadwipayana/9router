@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "next dev --webpack --port 20128",
     "build": "next build --webpack",
-    "start": "next start",
+    "start": "next start --port 4000",
     "dev:bun": "bun --bun next dev --webpack --port 20128",
     "build:bun": "bun --bun next build --webpack",
     "start:bun": "bun ./.next/standalone/server.js"
@@ -53,5 +53,8 @@
     "eslint-config-next": "16.1.6",
     "postcss": "^8.5.6",
     "tailwindcss": "^4"
-  }
+  },
+  "trustedDependencies": [
+    "unrs-resolver"
+  ]
 }

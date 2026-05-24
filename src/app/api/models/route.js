@@ -3,10 +3,17 @@ import { getModelAliases, setModelAlias } from "@/models";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { AI_MODELS } from "@/shared/constants/config";
 import { getProviderAlias } from "@/shared/constants/providers";
+import { buildModelManagementCatalog } from "@/app/api/v1/models/route.js";
 
 // GET /api/models - Get models with aliases
-export async function GET() {
+export async function GET(request) {
   try {
+    const { searchParams } = new URL(request.url);
+    if (searchParams.get("view") === "management") {
+      const catalog = await buildModelManagementCatalog();
+      return NextResponse.json(catalog);
+    }
+
     const modelAliases = await getModelAliases();
     const disabled = await getDisabledModels();
 
