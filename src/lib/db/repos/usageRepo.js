@@ -571,8 +571,9 @@ export async function getUsageStats(period = "all") {
 
     for (const r of filtered) {
       const tokens = parseJson(r.tokens, {}) || {};
-      const promptTokens = tokens.prompt_tokens || 0;
-      const completionTokens = tokens.completion_tokens || 0;
+      // Prefer pre-normalized DB columns; fall back to JSON blob (handles both prompt_tokens and input_tokens)
+      const promptTokens = r.promptTokens || tokens.prompt_tokens || tokens.input_tokens || 0;
+      const completionTokens = r.completionTokens || tokens.completion_tokens || tokens.output_tokens || 0;
       const entryCost = r.cost || 0;
       const providerDisplayName = providerNodeNameMap[r.provider] || r.provider;
 

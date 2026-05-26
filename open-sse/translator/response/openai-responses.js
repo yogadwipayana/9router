@@ -489,9 +489,9 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
     return null;
   }
 
-  // Response completed
-  if (eventType === "response.completed") {
-    // Extract usage from response.completed event
+  // Response completed — OpenAI Codex sends "response.done"; "response.completed" is an alias
+  if (eventType === "response.completed" || eventType === "response.done") {
+    // Extract usage from response.completed/response.done event
     const responseUsage = data.response?.usage;
     if (responseUsage && typeof responseUsage === "object") {
       const inputTokens = responseUsage.input_tokens || responseUsage.prompt_tokens || 0;

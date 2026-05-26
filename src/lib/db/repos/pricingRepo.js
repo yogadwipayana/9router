@@ -52,6 +52,19 @@ export async function getPricingForModel(provider, model) {
   if (!model) return null;
   const userPricing = await getUserPricing();
   if (provider && userPricing[provider]?.[model]) return userPricing[provider][model];
+
+  // Pricing page saves by provider alias (e.g. "cx" for "codex").
+  // calculateCost passes the provider ID ("codex"), so also try the alias.
+  if (provider) {
+    try {
+      const { AI_PROVIDERS } = await import("@/shared/constants/providers.js");
+      const alias = AI_PROVIDERS[provider]?.alias;
+      if (alias && alias !== provider && userPricing[alias]?.[model]) {
+        return userPricing[alias][model];
+      }
+    } catch { /* ignore import failures */ }
+  }
+
   const { getPricingForModel: resolveConst } = await import("@/shared/constants/pricing.js");
   return resolveConst(provider, model);
 }

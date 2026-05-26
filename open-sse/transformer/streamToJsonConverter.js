@@ -27,7 +27,8 @@ function processSSEMessage(msg, state) {
     state.created = parsed.response?.created_at || state.created;
   } else if (eventType === "response.output_item.done") {
     state.items.set(parsed.output_index ?? 0, parsed.item);
-  } else if (eventType === "response.completed") {
+  } else if (eventType === "response.completed" || eventType === "response.done") {
+    // OpenAI Codex sends "response.done" as the final event; "response.completed" is an alias
     state.status = "completed";
     if (parsed.response?.usage) {
       state.usage.input_tokens = parsed.response.usage.input_tokens || 0;

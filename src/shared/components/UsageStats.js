@@ -263,7 +263,9 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
     es.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
-        // Always merge only real-time fields, never overwrite full stats from REST
+        // Always merge only real-time fields, never overwrite full stats from REST.
+        // Do NOT call setLoading(false) here — loading is controlled by the REST fetch
+        // so the stats cards always wait for period-filtered totals before rendering.
         setStats((prev) => ({
           ...(prev || {}),
           activeRequests: data.activeRequests,
@@ -271,13 +273,10 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           errorProvider: data.errorProvider,
           pending: data.pending,
         }));
-        setLoading(false);
       } catch (err) {
         console.error("[SSE CLIENT] parse error:", err);
       }
     };
-
-    es.onerror = () => setLoading(false);
 
     return () => es.close();
   }, []);
