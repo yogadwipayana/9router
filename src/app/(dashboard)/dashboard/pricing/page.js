@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button, Card, CardSkeleton, Skeleton } from "@/shared/components";
+import { Badge, Button, Card, CardSkeleton, Skeleton } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import {
   ANTHROPIC_COMPATIBLE_PREFIX,
@@ -186,7 +186,7 @@ export default function PricingPage() {
           variant="info"
         />
         <SummaryMetric
-          icon="check_circle"
+          icon="price_check"
           label="Enabled Models"
           value={totalEnabled}
           variant="success"
@@ -326,49 +326,44 @@ function ProviderPricingCard({ group, pricingData, onChange, onResetModel }) {
             fallbackColor={provider.color}
           />
         </div>
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 flex items-center gap-2">
           <span className="text-sm font-semibold text-text-main">{provider.name}</span>
-          <span className="ml-2 inline-flex items-center rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-semibold text-text-muted">
-            {provider.alias}
-          </span>
+          <Badge variant="default" size="sm">{provider.alias}</Badge>
         </div>
-        <span className="shrink-0 text-xs text-text-muted">
+        <Badge variant="info" size="sm">
           {group.models.length} model{group.models.length !== 1 ? "s" : ""}
-        </span>
+        </Badge>
       </div>
 
-      {/* pricing table */}
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[580px] text-sm">
-          <thead>
-            <tr className="border-b border-border-subtle bg-surface-2/50">
-              <th className="px-4 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-text-muted">
-                Model
-              </th>
-              {PRICING_FIELDS.map((f) => (
-                <th
-                  key={f.key}
-                  className="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-wider text-text-muted"
-                >
-                  {f.label} <span className="normal-case font-normal opacity-60">$/1M</span>
-                </th>
-              ))}
-              <th className="w-10 px-2 py-2" />
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border-subtle">
-            {group.models.map((model) => (
-              <ModelPricingRow
-                key={model.clientId}
-                model={model}
-                providerAlias={provider.alias}
-                pricingData={pricingData}
-                onChange={onChange}
-                onReset={onResetModel}
-              />
-            ))}
-          </tbody>
-        </table>
+      {/* column labels — visible on sm+ */}
+      <div className="hidden sm:grid sm:grid-cols-[1fr_6rem_6rem_2.5rem] items-center gap-2 border-b border-border-subtle bg-surface-2/40 px-4 py-2">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+          Model
+        </span>
+        {PRICING_FIELDS.map((f) => (
+          <span
+            key={f.key}
+            className="text-right text-[10px] font-semibold uppercase tracking-wider text-text-muted"
+          >
+            {f.label}{" "}
+            <span className="font-normal normal-case opacity-60">$/1M</span>
+          </span>
+        ))}
+        <span />
+      </div>
+
+      {/* model rows */}
+      <div className="divide-y divide-border-subtle">
+        {group.models.map((model) => (
+          <ModelPricingRow
+            key={model.clientId}
+            model={model}
+            providerAlias={provider.alias}
+            pricingData={pricingData}
+            onChange={onChange}
+            onReset={onResetModel}
+          />
+        ))}
       </div>
     </Card>
   );
@@ -421,46 +416,96 @@ function ModelPricingRow({ model, providerAlias, pricingData, onChange, onReset 
   };
 
   return (
-    <tr className="group transition-colors hover:bg-surface-2/30">
-      {/* model name */}
-      <td className="px-4 py-2.5">
-        <div className="flex flex-col gap-0.5">
-          <code className="inline-block max-w-[260px] truncate rounded bg-surface px-1.5 py-0.5 text-[11px] font-semibold text-text-main">
+    <div className="group transition-colors hover:bg-surface-2/30">
+      {/* desktop: single-row grid */}
+      <div className="hidden sm:grid sm:grid-cols-[1fr_6rem_6rem_2.5rem] sm:items-center sm:gap-2 sm:px-4 sm:py-2.5">
+        {/* model name */}
+        <div className="flex flex-col gap-0.5 min-w-0">
+          <code className="inline-block max-w-[280px] truncate rounded-[6px] bg-surface-2 px-1.5 py-0.5 text-[11px] font-semibold text-text-main">
             {model.clientId}
           </code>
-          <span className="text-[11px] text-text-muted">{model.name}</span>
+          {model.name !== model.clientId && (
+            <span className="text-[11px] text-text-muted truncate">{model.name}</span>
+          )}
         </div>
-      </td>
 
-      {/* price inputs */}
-      {PRICING_FIELDS.map((f) => (
-        <td key={f.key} className="px-3 py-2.5 text-right">
-          <div className="relative inline-flex items-center">
-            <span className="pointer-events-none absolute left-2 text-[11px] text-text-muted">$</span>
-            <input
-              type="number"
-              step="0.001"
-              min="0"
+        {/* price inputs */}
+        {PRICING_FIELDS.map((f) => (
+          <div key={f.key} className="flex justify-end">
+            <PriceInput
               value={draft[f.key]}
-              onChange={(e) => handleInput(f.key, e.target.value)}
-              onBlur={(e) => handleBlur(f.key, e.target.value)}
-              className="w-[5.5rem] rounded-[8px] border border-transparent bg-surface-2 py-1 pl-5 pr-2 text-right text-xs text-text-main transition-all focus:border-brand-500/40 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+              onChange={(v) => handleInput(f.key, v)}
+              onBlur={(v) => handleBlur(f.key, v)}
             />
           </div>
-        </td>
-      ))}
+        ))}
 
-      {/* reset */}
-      <td className="px-2 py-2.5 text-right">
-        <button
-          type="button"
-          title="Reset to defaults"
-          onClick={() => onReset(providerAlias, model.id)}
-          className="inline-flex items-center justify-center rounded-lg p-1.5 text-text-muted opacity-0 transition hover:bg-surface-3 hover:text-text-main group-hover:opacity-100"
-        >
-          <span className="material-symbols-outlined text-[15px]">restart_alt</span>
-        </button>
-      </td>
-    </tr>
+        {/* reset */}
+        <div className="flex justify-end">
+          <button
+            type="button"
+            title="Reset to defaults"
+            onClick={() => onReset(providerAlias, model.id)}
+            className="inline-flex items-center justify-center rounded-[8px] p-1.5 text-text-muted opacity-0 transition-all hover:bg-surface-3 hover:text-text-main group-hover:opacity-100"
+          >
+            <span className="material-symbols-outlined text-[15px]">restart_alt</span>
+          </button>
+        </div>
+      </div>
+
+      {/* mobile: stacked layout */}
+      <div className="sm:hidden px-4 py-3">
+        <div className="mb-2.5 flex flex-col gap-0.5 min-w-0">
+          <code className="inline-block max-w-full truncate rounded-[6px] bg-surface-2 px-1.5 py-0.5 text-[11px] font-semibold text-text-main">
+            {model.clientId}
+          </code>
+          {model.name !== model.clientId && (
+            <span className="text-[11px] text-text-muted truncate">{model.name}</span>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          {PRICING_FIELDS.map((f) => (
+            <div key={f.key} className="flex flex-1 items-center gap-2">
+              <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-text-muted w-10">
+                {f.label}
+              </span>
+              <PriceInput
+                value={draft[f.key]}
+                onChange={(v) => handleInput(f.key, v)}
+                onBlur={(v) => handleBlur(f.key, v)}
+                fullWidth
+              />
+            </div>
+          ))}
+          <button
+            type="button"
+            title="Reset to defaults"
+            onClick={() => onReset(providerAlias, model.id)}
+            className="inline-flex shrink-0 items-center justify-center rounded-[8px] p-1.5 text-text-muted transition-all hover:bg-surface-3 hover:text-text-main"
+          >
+            <span className="material-symbols-outlined text-[15px]">restart_alt</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── price input ───────────────────────────────────────────────────────────────
+
+function PriceInput({ value, onChange, onBlur, fullWidth = false }) {
+  return (
+    <div className={`relative inline-flex items-center ${fullWidth ? "w-full" : ""}`}>
+      <span className="pointer-events-none absolute left-2.5 text-[11px] text-text-muted">$</span>
+      <input
+        type="number"
+        step="0.001"
+        min="0"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={(e) => onBlur(e.target.value)}
+        className={`${fullWidth ? "w-full" : "w-[6rem]"} rounded-[8px] border border-transparent bg-surface-2 py-1.5 pl-6 pr-2 text-right text-xs text-text-main transition-all focus:border-brand-500/40 focus:outline-none focus:ring-2 focus:ring-brand-500/30`}
+      />
+    </div>
   );
 }
