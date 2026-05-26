@@ -285,6 +285,20 @@ export async function buildModelsList(kindFilter) {
     models.push(entry);
   }
 
+  // When LLM combos are configured, only expose combo names — hide raw provider
+  // models so clients see a clean, curated list instead of every underlying account.
+  const hasLlmCombos = combos.some((c) => !c.kind || c.kind === LLM_KIND);
+  if (hasLlmCombos && kindFilter.includes(LLM_KIND)) {
+    const dedupedModels = [];
+    const seenModelIds = new Set();
+    for (const model of models) {
+      if (!model?.id || seenModelIds.has(model.id)) continue;
+      seenModelIds.add(model.id);
+      dedupedModels.push(model);
+    }
+    return dedupedModels;
+  }
+
   if (!connectionsAvailable) {
     // DB unavailable -> return static models, filtered by per-model kind
     const aliasToProviderId = Object.fromEntries(
@@ -579,16 +593,11 @@ export async function buildModelManagementCatalog() {
     console.log("Could not fetch disabled providers");
   }
 
-  const activeConnectionByProvider = new Map();
-  for (const conn of connections) {
-    if (!activeConnectionByProvider.has(conn.provider)) {
-      activeConnectionByProvider.set(conn.provider, conn);
-    }
-  }
-
   const providers = [];
+  const seenAliases = new Set();
 
-  for (const [providerId, conn] of activeConnectionByProvider.entries()) {
+  for (const conn of connections) {
+    const providerId = conn.provider;
     if (!dashboardProviderIds.has(providerId)) continue;
 
     const staticAlias = PROVIDER_ID_TO_ALIAS[providerId] || providerId;
@@ -597,6 +606,10 @@ export async function buildModelManagementCatalog() {
       || getProviderAlias(providerId)
       || staticAlias
     ).trim();
+
+    // Each unique alias maps to its own routing prefix; skip duplicates.
+    if (seenAliases.has(outputAlias)) continue;
+    seenAliases.add(outputAlias);
     const providerModels = PROVIDER_MODELS[staticAlias] || [];
     const providerInfo = AI_PROVIDERS[providerId] || {};
     const providerDisabled = isProviderDisabled(disabledProviders, outputAlias, staticAlias, providerId);
