@@ -4,8 +4,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, Card, ConfirmModal, Input, Modal, Skeleton, Toggle } from "@/shared/components";
 import { useHeaderSearchStore } from "@/store/headerSearchStore";
 import { useNotificationStore } from "@/store/notificationStore";
+import { cn } from "@/shared/utils/cn";
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const USER_TABLE_COLUMNS = "md:grid-cols-[minmax(0,1fr)_5.75rem_5.75rem_3.5rem_6rem_12rem] lg:grid-cols-[minmax(18rem,1fr)_6.25rem_6.25rem_4rem_6.5rem_13.5rem] xl:grid-cols-[minmax(24rem,1fr)_6.5rem_6.5rem_4.5rem_6.5rem_14rem]";
 
 function formatUsd(value) {
   if (value === null || value === undefined) return "No limit";
@@ -293,11 +295,10 @@ export default function UsersPage() {
       </div>
 
       <Card padding="none" className="overflow-hidden">
-        <div className="hidden md:grid md:grid-cols-[minmax(0,1fr)_8rem_8rem_8rem_5rem_6rem_11rem] items-center gap-3 border-b border-border-subtle bg-surface-2/40 px-4 py-2">
+        <div className={cn("hidden items-center gap-3 border-b border-border-subtle bg-surface-2/40 px-4 py-2 md:grid", USER_TABLE_COLUMNS)}>
           <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">User</span>
           <span className="text-right text-[10px] font-semibold uppercase tracking-wider text-text-muted">Budget</span>
           <span className="text-right text-[10px] font-semibold uppercase tracking-wider text-text-muted">Used</span>
-          <span className="text-right text-[10px] font-semibold uppercase tracking-wider text-text-muted">Remaining</span>
           <span className="text-right text-[10px] font-semibold uppercase tracking-wider text-text-muted">Keys</span>
           <span className="text-center text-[10px] font-semibold uppercase tracking-wider text-text-muted">Status</span>
           <span className="text-right text-[10px] font-semibold uppercase tracking-wider text-text-muted">Actions</span>
@@ -443,7 +444,7 @@ function UserRow({ user, onEdit, onTopUp, onResetUsage, onToggle, onRemove }) {
 
   return (
     <div className="group px-4 py-3 transition-colors hover:bg-surface-2/30">
-      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_8rem_8rem_8rem_5rem_6rem_11rem] md:items-center">
+      <div className={cn("grid gap-3 md:items-center", USER_TABLE_COLUMNS)}>
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
             <span className="material-symbols-outlined shrink-0 text-[18px] text-text-muted">person</span>
@@ -456,7 +457,6 @@ function UserRow({ user, onEdit, onTopUp, onResetUsage, onToggle, onRemove }) {
 
         <Metric label="Budget" value={formatUsd(user.budgetUsd)} />
         <Metric label="Used" value={formatUsd(user.spentUsd)} />
-        <Metric label="Remaining" value={formatUsd(user.remainingUsd)} />
         <Metric label="Keys" value={user.keyCount} />
 
         <div className="flex items-center justify-between gap-2 md:justify-center">
@@ -466,53 +466,63 @@ function UserRow({ user, onEdit, onTopUp, onResetUsage, onToggle, onRemove }) {
           </span>
         </div>
 
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <Toggle
-            size="sm"
-            checked={user.configured ? user.isActive : true}
-            onChange={(checked) => onToggle(user, checked)}
-          />
-          {user.configured && (
-            <button
-              type="button"
+        <div className="flex items-center justify-between gap-3 md:justify-end">
+          <span className="text-xs text-text-muted md:hidden">Actions</span>
+          <div className="flex shrink-0 items-center justify-end gap-1 md:w-full">
+            <Toggle
+              size="sm"
+              checked={user.configured ? user.isActive : true}
+              onChange={(checked) => onToggle(user, checked)}
+            />
+            <ActionButton
+              icon="add_card"
+              label="Add budget"
+              disabled={!user.configured}
+              highlighted={limitReached}
               onClick={() => onTopUp(user)}
-              title="Add budget"
-              className={`rounded-[8px] p-1.5 transition-all hover:bg-primary/10 hover:text-primary ${limitReached ? "bg-primary/10 text-primary md:opacity-100" : "text-text-muted md:opacity-0 md:group-hover:opacity-100"}`}
-            >
-              <span className="material-symbols-outlined text-[17px]">add_card</span>
-            </button>
-          )}
-          {user.configured && hasUsage && (
-            <button
-              type="button"
+            />
+            <ActionButton
+              icon="restart_alt"
+              label="Reset usage"
+              disabled={!user.configured || !hasUsage}
               onClick={() => onResetUsage(user)}
-              title="Reset usage"
-              className="rounded-[8px] p-1.5 text-text-muted transition-all hover:bg-surface-3 hover:text-primary md:opacity-0 md:group-hover:opacity-100"
-            >
-              <span className="material-symbols-outlined text-[17px]">restart_alt</span>
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => onEdit(user)}
-            title={user.configured ? "Edit budget" : "Set budget"}
-            className="rounded-[8px] p-1.5 text-text-muted transition-all hover:bg-surface-3 hover:text-primary md:opacity-0 md:group-hover:opacity-100"
-          >
-            <span className="material-symbols-outlined text-[17px]">{user.configured ? "edit" : "add"}</span>
-          </button>
-          {user.configured && (
-            <button
-              type="button"
+            />
+            <ActionButton
+              icon={user.configured ? "edit" : "add"}
+              label={user.configured ? "Edit budget" : "Set budget"}
+              onClick={() => onEdit(user)}
+            />
+            <ActionButton
+              icon="delete"
+              label="Remove budget"
+              tone="danger"
+              disabled={!user.configured}
               onClick={() => onRemove(user)}
-              title="Remove budget"
-              className="rounded-[8px] p-1.5 text-text-muted transition-all hover:bg-red-500/10 hover:text-red-500 md:opacity-0 md:group-hover:opacity-100"
-            >
-              <span className="material-symbols-outlined text-[17px]">delete</span>
-            </button>
-          )}
+            />
+          </div>
         </div>
       </div>
     </div>
+  );
+}
+
+function ActionButton({ icon, label, onClick, disabled = false, highlighted = false, tone = "default" }) {
+  return (
+    <button
+      type="button"
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+      className={cn(
+        "inline-flex size-8 shrink-0 items-center justify-center rounded-[8px] text-text-muted transition-colors",
+        "hover:bg-surface-3 hover:text-primary disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-text-muted",
+        highlighted && !disabled && "bg-primary/10 text-primary hover:bg-primary/15",
+        tone === "danger" && "hover:bg-red-500/10 hover:text-red-500"
+      )}
+    >
+      <span className="material-symbols-outlined text-[17px]">{icon}</span>
+    </button>
   );
 }
 

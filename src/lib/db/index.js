@@ -77,15 +77,28 @@ export {
 // Export/import full DB
 export async function exportDb() {
   const db = await getAdapter();
-  const { exportSettings } = await import("./repos/settingsRepo.js");
+  const [{ exportSettings }, { getApiKeys }, { getOwnerUsers }] = await Promise.all([
+    import("./repos/settingsRepo.js"),
+    import("./repos/apiKeysRepo.js"),
+    import("./repos/ownerUsersRepo.js"),
+  ]);
+  const ownerUsers = (await getOwnerUsers())
+    .filter((u) => u.configured !== false)
+    .map((u) => ({
+      email: u.email,
+      budgetUsd: Number(u.budgetUsd || 0),
+      isActive: u.isActive !== false,
+      createdAt: u.createdAt,
+      updatedAt: u.updatedAt,
+    }));
 
   const out = {
     settings: await exportSettings(),
     providerConnections: db.all(`SELECT * FROM providerConnections`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, provider: r.provider, authType: r.authType, name: r.name, email: r.email, priority: r.priority, isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     providerNodes: db.all(`SELECT * FROM providerNodes`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, type: r.type, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     proxyPools: db.all(`SELECT * FROM proxyPools`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, isActive: r.isActive === 1, testStatus: r.testStatus, createdAt: r.createdAt, updatedAt: r.updatedAt })),
-    apiKeys: db.all(`SELECT * FROM apiKeys`).map((r) => ({ id: r.id, key: r.key, name: r.name, owner: r.owner || null, machineId: r.machineId, isActive: r.isActive === 1, createdAt: r.createdAt })),
-    ownerUsers: db.all(`SELECT * FROM ownerUsers`).map((r) => ({ email: r.email, budgetUsd: Number(r.budgetUsd || 0), isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
+    apiKeys: await getApiKeys(),
+    ownerUsers,
     combos: db.all(`SELECT * FROM combos`).map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), createdAt: r.createdAt, updatedAt: r.updatedAt })),
     modelAliases: {},
     customModels: [],
@@ -105,11 +118,51 @@ export async function exportDb() {
   return out;
 }
 
+async function importPostgresOperationalTables(payload) {
+  const { getPrisma, usePostgresOperationalData } = await import("../prisma.js");
+  if (!usePostgresOperationalData()) return;
+
+  const prisma = getPrisma();
+  await prisma.$transaction(async (tx) => {
+    await tx.apiKey.deleteMany();
+    await tx.ownerUser.deleteMany();
+
+    for (const k of payload.apiKeys || []) {
+      await tx.apiKey.create({
+        data: {
+          id: k.id,
+          key: k.key,
+          name: k.name || null,
+          owner: k.owner || null,
+          machineId: k.machineId || null,
+          isActive: k.isActive === false ? 0 : 1,
+          createdAt: k.createdAt || new Date().toISOString(),
+        },
+      });
+    }
+
+    for (const u of payload.ownerUsers || []) {
+      const now = new Date().toISOString();
+      await tx.ownerUser.create({
+        data: {
+          email: u.email,
+          budgetUsd: Number(u.budgetUsd || 0),
+          isActive: u.isActive === false ? 0 : 1,
+          createdAt: u.createdAt || now,
+          updatedAt: u.updatedAt || now,
+        },
+      });
+    }
+  });
+}
+
 export async function importDb(payload) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error("Invalid database payload");
   }
   const db = await getAdapter();
+  const { usePostgresOperationalData } = await import("../prisma.js");
+  const usePostgres = usePostgresOperationalData();
 
   db.transaction(() => {
     // Wipe all tables (keep _meta)
@@ -117,8 +170,10 @@ export async function importDb(payload) {
     db.run(`DELETE FROM providerConnections`);
     db.run(`DELETE FROM providerNodes`);
     db.run(`DELETE FROM proxyPools`);
-    db.run(`DELETE FROM apiKeys`);
-    db.run(`DELETE FROM ownerUsers`);
+    if (!usePostgres) {
+      db.run(`DELETE FROM apiKeys`);
+      db.run(`DELETE FROM ownerUsers`);
+    }
     db.run(`DELETE FROM combos`);
     db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing', 'disabledModels', 'disabledProviders')`);
 
@@ -148,18 +203,20 @@ export async function importDb(payload) {
         [id, isActive === false ? 0 : 1, testStatus || "unknown", stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
       );
     }
-    for (const k of payload.apiKeys || []) {
-      db.run(
-        `INSERT OR REPLACE INTO apiKeys(id, key, name, owner, machineId, isActive, createdAt) VALUES(?, ?, ?, ?, ?, ?, ?)`,
-        [k.id, k.key, k.name || null, k.owner || null, k.machineId || null, k.isActive === false ? 0 : 1, k.createdAt || new Date().toISOString()]
-      );
-    }
-    for (const u of payload.ownerUsers || []) {
-      const now = new Date().toISOString();
-      db.run(
-        `INSERT OR REPLACE INTO ownerUsers(email, budgetUsd, isActive, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?)`,
-        [u.email, Number(u.budgetUsd || 0), u.isActive === false ? 0 : 1, u.createdAt || now, u.updatedAt || now]
-      );
+    if (!usePostgres) {
+      for (const k of payload.apiKeys || []) {
+        db.run(
+          `INSERT OR REPLACE INTO apiKeys(id, key, name, owner, machineId, isActive, createdAt) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+          [k.id, k.key, k.name || null, k.owner || null, k.machineId || null, k.isActive === false ? 0 : 1, k.createdAt || new Date().toISOString()]
+        );
+      }
+      for (const u of payload.ownerUsers || []) {
+        const now = new Date().toISOString();
+        db.run(
+          `INSERT OR REPLACE INTO ownerUsers(email, budgetUsd, isActive, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?)`,
+          [u.email, Number(u.budgetUsd || 0), u.isActive === false ? 0 : 1, u.createdAt || now, u.updatedAt || now]
+        );
+      }
     }
     for (const c of payload.combos || []) {
       db.run(
@@ -190,6 +247,7 @@ export async function importDb(payload) {
     }
   });
 
+  await importPostgresOperationalTables(payload);
   return await exportDb();
 }
 

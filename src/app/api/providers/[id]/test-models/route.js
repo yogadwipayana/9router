@@ -8,7 +8,7 @@ import { getConsistentMachineId } from "@/shared/utils/machineId";
 const CLI_TOKEN_SALT = "9r-cli-auth";
 
 /**
- * Get an active API key to pass through auth when requireApiKey is enabled.
+ * Get an active API key to pass through public model endpoint auth.
  */
 async function getInternalApiKey() {
   const keys = await getApiKeys();

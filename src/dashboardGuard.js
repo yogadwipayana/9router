@@ -122,12 +122,10 @@ async function getApiKeyAccessForRequest(request) {
 }
 
 function getApiKeyAccessError(state) {
-  return formatApiKeyAccessError(state, { fallback: "API key required for remote API access" });
+  return formatApiKeyAccessError(state, { fallback: "API key required" });
 }
 
 async function canAccessPublicLlmApi(request) {
-  if (isLocalRequest(request)) return true;
-  if (await hasValidCliToken(request)) return true;
   return await hasValidApiKey(request);
 }
 
@@ -190,7 +188,6 @@ export async function proxy(request) {
   }
 
   if (isPublicLlmApi(pathname)) {
-    if (isLocalRequest(request) || await hasValidCliToken(request)) return NextResponse.next();
     const apiKeyState = await getApiKeyAccessForRequest(request);
     if (apiKeyState.valid) return NextResponse.next();
     return NextResponse.json({ error: getApiKeyAccessError(apiKeyState) }, { status: getApiKeyAccessStatus(apiKeyState) });

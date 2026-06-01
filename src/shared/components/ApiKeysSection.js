@@ -13,7 +13,6 @@ export default function ApiKeysSection() {
   const [keys, setKeys] = useState([]);
   const [users, setUsers] = useState([]);
   const [usersLoading, setUsersLoading] = useState(false);
-  const [requireApiKey, setRequireApiKey] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
   const [newKeyUserEmail, setNewKeyUserEmail] = useState("");
@@ -26,7 +25,6 @@ export default function ApiKeysSection() {
   useEffect(() => {
     fetchKeys();
     fetchUsers();
-    loadRequireApiKey();
   }, []);
 
   const fetchKeys = async () => {
@@ -36,16 +34,6 @@ export default function ApiKeysSection() {
       if (res.ok) setKeys(data.keys || []);
     } catch (error) {
       console.log("Error fetching keys:", error);
-    }
-  };
-
-  const loadRequireApiKey = async () => {
-    try {
-      const res = await fetch("/api/settings");
-      const data = await res.json();
-      if (res.ok) setRequireApiKey(data.requireApiKey || false);
-    } catch (error) {
-      console.log("Error loading requireApiKey:", error);
     }
   };
 
@@ -73,19 +61,6 @@ export default function ApiKeysSection() {
     setNewKeyName("");
     setNewKeyUserEmail("");
     setCreateError("");
-  };
-
-  const handleRequireApiKey = async (value) => {
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ requireApiKey: value }),
-      });
-      if (res.ok) setRequireApiKey(value);
-    } catch (error) {
-      console.log("Error updating requireApiKey:", error);
-    }
   };
 
   const handleCreateKey = async () => {
@@ -193,15 +168,14 @@ export default function ApiKeysSection() {
 
         <div className="flex items-center justify-between pb-4 mb-4 border-b border-border gap-4">
           <div className="min-w-0 flex-1">
-            <p className="font-medium">Require API key</p>
+            <p className="font-medium">API key required</p>
             <p className="text-sm text-text-muted">
-              Requests without a valid key will be rejected
+              All public API requests must include a valid key
             </p>
           </div>
-          <Toggle
-            checked={requireApiKey}
-            onChange={() => handleRequireApiKey(!requireApiKey)}
-          />
+          <span className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">
+            Always on
+          </span>
         </div>
 
         {keys.length === 0 ? (

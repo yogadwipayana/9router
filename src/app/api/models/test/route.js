@@ -13,7 +13,7 @@ export async function POST(request) {
 
     const baseUrl = `http://127.0.0.1:${process.env.PORT || UPDATER_CONFIG.appPort}`;
 
-    // Get an active internal API key for auth (if requireApiKey is enabled)
+    // Public model endpoints always require an API key, including internal self-checks.
     let apiKey = null;
     try {
       const keys = await getApiKeys();

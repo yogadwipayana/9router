@@ -1,7 +1,7 @@
 import { EventEmitter } from "events";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
-import { getMeta, setMeta } from "../helpers/metaStore.js";
+import { getPrisma, usePostgresOperationalData } from "../../prisma.js";
 
 const PENDING_TIMEOUT_MS = 60 * 1000;
 const RING_CAP = 50;
@@ -99,6 +99,68 @@ function createEmptyDay() {
   };
 }
 
+function rowToUsageEntry(row) {
+  return {
+    timestamp: row.timestamp,
+    provider: row.provider,
+    model: row.model,
+    connectionId: row.connectionId,
+    apiKey: row.apiKey,
+    endpoint: row.endpoint,
+    cost: row.cost,
+    status: row.status,
+    tokens: parseJson(row.tokens, {}),
+  };
+}
+
+function buildUsageWhere(filter = {}) {
+  const where = {};
+  if (filter.provider) where.provider = filter.provider;
+  if (filter.model) where.model = filter.model;
+  if (filter.startDate || filter.endDate) {
+    where.timestamp = {};
+    if (filter.startDate) where.timestamp.gte = new Date(filter.startDate).toISOString();
+    if (filter.endDate) where.timestamp.lte = new Date(filter.endDate).toISOString();
+  }
+  return where;
+}
+
+function buildTimestampWhere(startIso, endIso) {
+  const timestamp = {};
+  if (startIso) timestamp.gte = startIso;
+  if (endIso) timestamp.lte = endIso;
+  return { timestamp };
+}
+
+async function rebuildPostgresUsageDailyFromHistory(client = getPrisma()) {
+  await client.usageDaily.deleteMany();
+  const rows = await client.usageHistory.findMany({
+    orderBy: { id: "asc" },
+    select: {
+      timestamp: true,
+      provider: true,
+      model: true,
+      connectionId: true,
+      apiKey: true,
+      endpoint: true,
+      cost: true,
+      status: true,
+      tokens: true,
+    },
+  });
+  const days = new Map();
+
+  for (const row of rows) {
+    const dateKey = getLocalDateKey(row.timestamp);
+    if (!days.has(dateKey)) days.set(dateKey, createEmptyDay());
+    aggregateEntryToDay(days.get(dateKey), rowToUsageEntry(row));
+  }
+
+  for (const [dateKey, day] of days.entries()) {
+    await client.usageDaily.create({ data: { dateKey, data: stringifyJson(day) } });
+  }
+}
+
 function rebuildUsageDailyFromHistory(db) {
   db.run(`DELETE FROM usageDaily`);
   const rows = db.all(`SELECT timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens FROM usageHistory ORDER BY id ASC`);
@@ -168,6 +230,26 @@ async function ensureRingInitialized() {
   if (recentRing.initialized) return;
   recentRing.initialized = true;
   try {
+    if (usePostgresOperationalData()) {
+      const rows = await getPrisma().usageHistory.findMany({
+        orderBy: { id: "desc" },
+        take: RING_CAP,
+        select: {
+          timestamp: true,
+          provider: true,
+          model: true,
+          connectionId: true,
+          apiKey: true,
+          endpoint: true,
+          cost: true,
+          status: true,
+          tokens: true,
+        },
+      });
+      recentRing.items = rows.reverse().map(rowToUsageEntry);
+      return;
+    }
+
     const db = await getAdapter();
     const rows = db.all(`SELECT timestamp, provider, model, connectionId, apiKey, endpoint, cost, status, tokens FROM usageHistory ORDER BY id DESC LIMIT ?`, [RING_CAP]);
     recentRing.items = rows.reverse().map((r) => ({
@@ -313,14 +395,50 @@ export async function getActiveRequests() {
 
 export async function saveRequestUsage(entry) {
   try {
-    const db = await getAdapter();
-
     if (!entry.timestamp) entry.timestamp = new Date().toISOString();
     entry.cost = await calculateCost(entry.provider, entry.model, entry.tokens);
 
     const tokens = entry.tokens || {};
     const promptTokens = tokens.prompt_tokens || tokens.input_tokens || 0;
     const completionTokens = tokens.completion_tokens || tokens.output_tokens || 0;
+
+    if (usePostgresOperationalData()) {
+      const prisma = getPrisma();
+      await prisma.$transaction(async (tx) => {
+        await tx.usageHistory.create({
+          data: {
+            timestamp: entry.timestamp,
+            provider: entry.provider || null,
+            model: entry.model || null,
+            connectionId: entry.connectionId || null,
+            apiKey: entry.apiKey || null,
+            endpoint: entry.endpoint || null,
+            promptTokens,
+            completionTokens,
+            cost: entry.cost || 0,
+            status: entry.status || "ok",
+            tokens: stringifyJson(tokens),
+            meta: stringifyJson({}),
+          },
+        });
+
+        const dateKey = getLocalDateKey(entry.timestamp);
+        const row = await tx.usageDaily.findUnique({ where: { dateKey } });
+        const day = row ? parseJson(row.data, {}) : createEmptyDay();
+        aggregateEntryToDay(day, entry);
+        await tx.usageDaily.upsert({
+          where: { dateKey },
+          create: { dateKey, data: stringifyJson(day) },
+          update: { data: stringifyJson(day) },
+        });
+      });
+
+      pushToRing(entry);
+      statsEmitter.emit("update");
+      return;
+    }
+
+    const db = await getAdapter();
 
     // All 3 writes (history insert, daily upsert, lifetime counter) in ONE transaction.
     // better-sqlite3 is sync → no JS yield mid-transaction → no race in same process.
@@ -355,6 +473,25 @@ export async function saveRequestUsage(entry) {
 }
 
 export async function getUsageHistory(filter = {}) {
+  if (usePostgresOperationalData()) {
+    const rows = await getPrisma().usageHistory.findMany({
+      where: buildUsageWhere(filter),
+      orderBy: { id: "asc" },
+      select: {
+        timestamp: true,
+        provider: true,
+        model: true,
+        connectionId: true,
+        apiKey: true,
+        endpoint: true,
+        cost: true,
+        status: true,
+        tokens: true,
+      },
+    });
+    return rows.map(rowToUsageEntry);
+  }
+
   const db = await getAdapter();
   const conds = [];
   const params = [];
@@ -374,7 +511,17 @@ export async function getUsageHistory(filter = {}) {
   }));
 }
 
-function loadDaysInRange(adapter, maxDays) {
+async function loadDaysInRange(adapter, maxDays) {
+  if (usePostgresOperationalData()) {
+    if (maxDays == null) {
+      return await getPrisma().usageDaily.findMany();
+    }
+    const today = new Date();
+    const cutoff = new Date(today.getFullYear(), today.getMonth(), today.getDate() - maxDays + 1);
+    const cutoffKey = `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, "0")}-${String(cutoff.getDate()).padStart(2, "0")}`;
+    return await getPrisma().usageDaily.findMany({ where: { dateKey: { gte: cutoffKey } } });
+  }
+
   if (maxDays == null) {
     return adapter.all(`SELECT dateKey, data FROM usageDaily`);
   }
@@ -386,6 +533,8 @@ function loadDaysInRange(adapter, maxDays) {
 
 export async function getUsageStats(period = "all") {
   const db = await getAdapter();
+  const usingPostgres = usePostgresOperationalData();
+  const prisma = usingPostgres ? getPrisma() : null;
 
   const [{ getProviderConnections }, { getApiKeys }, { getProviderNodes }] = await Promise.all([
     import("./connectionsRepo.js"),
@@ -410,7 +559,13 @@ export async function getUsageStats(period = "all") {
   for (const k of allApiKeys) apiKeyMap[k.key] = { name: k.name, id: k.id, createdAt: k.createdAt };
 
   // recentRequests from live history (last 100 entries enough for 20 deduped)
-  const recentRows = db.all(`SELECT timestamp, provider, model, apiKey, tokens, status FROM usageHistory ORDER BY id DESC LIMIT 100`);
+  const recentRows = usingPostgres
+    ? await prisma.usageHistory.findMany({
+      orderBy: { id: "desc" },
+      take: 100,
+      select: { timestamp: true, provider: true, model: true, apiKey: true, tokens: true, status: true },
+    })
+    : db.all(`SELECT timestamp, provider, model, apiKey, tokens, status FROM usageHistory ORDER BY id DESC LIMIT 100`);
   const seen = new Set();
   const recentRequests = recentRows
     .map((r) => {
@@ -470,10 +625,15 @@ export async function getUsageStats(period = "all") {
     bucketMap[ts] = { requests: 0, promptTokens: 0, completionTokens: 0, cost: 0 };
     stats.last10Minutes.push(bucketMap[ts]);
   }
-  const recent10 = db.all(
-    `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ? AND timestamp <= ?`,
-    [tenMinutesAgo.toISOString(), now.toISOString()]
-  );
+  const recent10 = usingPostgres
+    ? await prisma.usageHistory.findMany({
+      where: buildTimestampWhere(tenMinutesAgo.toISOString(), now.toISOString()),
+      select: { timestamp: true, promptTokens: true, completionTokens: true, cost: true },
+    })
+    : db.all(
+      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ? AND timestamp <= ?`,
+      [tenMinutesAgo.toISOString(), now.toISOString()]
+    );
   for (const r of recent10) {
     const tt = new Date(r.timestamp).getTime();
     const minuteStart = Math.floor(tt / 60000) * 60000;
@@ -490,7 +650,7 @@ export async function getUsageStats(period = "all") {
   if (useDailySummary) {
     const periodDays = { "7d": 7, "30d": 30, "60d": 60 };
     const maxDays = periodDays[period] || null;
-    const dayRows = loadDaysInRange(db, maxDays);
+    const dayRows = await loadDaysInRange(db, maxDays);
 
     for (const dr of dayRows) {
       const dateKey = dr.dateKey;
@@ -574,10 +734,22 @@ export async function getUsageStats(period = "all") {
 
     // Overlay precise lastUsed timestamps from history
     const overlayCutoff = maxDays ? Date.now() - maxDays * 86400000 : 0;
-    const histRows = db.all(
-      `SELECT timestamp, provider, model, connectionId, apiKey, endpoint FROM usageHistory WHERE timestamp >= ?`,
-      [new Date(overlayCutoff).toISOString()]
-    );
+    const histRows = usingPostgres
+      ? await prisma.usageHistory.findMany({
+        where: buildTimestampWhere(new Date(overlayCutoff).toISOString()),
+        select: {
+          timestamp: true,
+          provider: true,
+          model: true,
+          connectionId: true,
+          apiKey: true,
+          endpoint: true,
+        },
+      })
+      : db.all(
+        `SELECT timestamp, provider, model, connectionId, apiKey, endpoint FROM usageHistory WHERE timestamp >= ?`,
+        [new Date(overlayCutoff).toISOString()]
+      );
     for (const e of histRows) {
       const ts = e.timestamp;
       const modelKey = e.provider ? `${e.model} (${e.provider})` : e.model;
@@ -608,10 +780,26 @@ export async function getUsageStats(period = "all") {
     } else {
       cutoff = new Date(Date.now() - PERIOD_MS["24h"]).toISOString();
     }
-    const filtered = db.all(
-      `SELECT timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, tokens FROM usageHistory WHERE timestamp >= ?`,
-      [cutoff]
-    );
+    const filtered = usingPostgres
+      ? await prisma.usageHistory.findMany({
+        where: buildTimestampWhere(cutoff),
+        select: {
+          timestamp: true,
+          provider: true,
+          model: true,
+          connectionId: true,
+          apiKey: true,
+          endpoint: true,
+          promptTokens: true,
+          completionTokens: true,
+          cost: true,
+          tokens: true,
+        },
+      })
+      : db.all(
+        `SELECT timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, tokens FROM usageHistory WHERE timestamp >= ?`,
+        [cutoff]
+      );
 
     for (const r of filtered) {
       const tokens = parseJson(r.tokens, {}) || {};
@@ -690,6 +878,8 @@ export async function getUsageStats(period = "all") {
 
 export async function getChartData(period = "7d") {
   const db = await getAdapter();
+  const usingPostgres = usePostgresOperationalData();
+  const prisma = usingPostgres ? getPrisma() : null;
   const now = Date.now();
 
   if (period === "today") {
@@ -702,10 +892,15 @@ export async function getChartData(period = "7d") {
     const labelFn = (ts) => new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
     const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0 }));
 
-    const rows = db.all(
-      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?`,
-      [new Date(startTime).toISOString()]
-    );
+    const rows = usingPostgres
+      ? await prisma.usageHistory.findMany({
+        where: buildTimestampWhere(new Date(startTime).toISOString()),
+        select: { timestamp: true, promptTokens: true, completionTokens: true, cost: true },
+      })
+      : db.all(
+        `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?`,
+        [new Date(startTime).toISOString()]
+      );
     for (const r of rows) {
       const t = new Date(r.timestamp).getTime();
       if (t < startTime || t >= endTime) continue;
@@ -725,10 +920,15 @@ export async function getChartData(period = "7d") {
     const startTime = now - bucketCount * bucketMs;
     const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0 }));
 
-    const rows = db.all(
-      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?`,
-      [new Date(startTime).toISOString()]
-    );
+    const rows = usingPostgres
+      ? await prisma.usageHistory.findMany({
+        where: buildTimestampWhere(new Date(startTime).toISOString()),
+        select: { timestamp: true, promptTokens: true, completionTokens: true, cost: true },
+      })
+      : db.all(
+        `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?`,
+        [new Date(startTime).toISOString()]
+      );
     for (const r of rows) {
       const t = new Date(r.timestamp).getTime();
       if (t < startTime || t > now) continue;
@@ -744,7 +944,7 @@ export async function getChartData(period = "7d") {
   const labelFn = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
   // Build map of dateKey → day data
-  const dayRows = loadDaysInRange(db, bucketCount);
+  const dayRows = await loadDaysInRange(db, bucketCount);
   const dayMap = {};
   for (const r of dayRows) dayMap[r.dateKey] = parseJson(r.data, {});
 
@@ -762,6 +962,27 @@ export async function getChartData(period = "7d") {
 }
 
 export async function resetUsageData() {
+  if (usePostgresOperationalData()) {
+    const prisma = getPrisma();
+    await prisma.$transaction([
+      prisma.usageHistory.deleteMany(),
+      prisma.usageDaily.deleteMany(),
+    ]);
+
+    try {
+      const db = await getAdapter();
+      db.run(`DELETE FROM _meta WHERE key = 'totalRequestsLifetime'`);
+    } catch {}
+
+    recentRing.items = [];
+    recentRing.initialized = true;
+    lastErrorProvider.provider = "";
+    lastErrorProvider.ts = 0;
+
+    statsEmitter.emit("update");
+    return;
+  }
+
   const db = await getAdapter();
 
   db.transaction(() => {
@@ -783,6 +1004,33 @@ export async function resetUsageData() {
 
 export async function resetUsageForOwner(email) {
   const normalized = normalizeOwnerEmail(email);
+  if (usePostgresOperationalData()) {
+    const prisma = getPrisma();
+    const keyRows = await prisma.$queryRaw`
+      SELECT "key"
+      FROM "apiKeys"
+      WHERE lower("owner") = ${normalized}
+    `;
+    const keys = keyRows.map((row) => row.key).filter(Boolean);
+
+    if (keys.length === 0) {
+      return { deleted: 0, apiKeyCount: 0 };
+    }
+
+    const deleted = await prisma.$transaction(async (tx) => {
+      const result = await tx.usageHistory.deleteMany({ where: { apiKey: { in: keys } } });
+      await rebuildPostgresUsageDailyFromHistory(tx);
+      return result.count;
+    });
+
+    const keySet = new Set(keys);
+    recentRing.items = recentRing.items.filter((item) => !keySet.has(item.apiKey));
+    recentRing.initialized = true;
+    statsEmitter.emit("update");
+
+    return { deleted, apiKeyCount: keys.length };
+  }
+
   const db = await getAdapter();
   const keys = db.all(
     `SELECT key FROM apiKeys WHERE lower(owner) = ?`,
@@ -819,11 +1067,25 @@ export async function appendRequestLog() {}
 
 export async function getRecentLogs(limit = 200) {
   try {
-    const db = getAdapter();
-    const rows = db.all(
-      `SELECT timestamp, provider, model, connectionId, promptTokens, completionTokens, status, tokens FROM usageHistory ORDER BY id DESC LIMIT ?`,
-      [limit],
-    );
+    const rows = usePostgresOperationalData()
+      ? await getPrisma().usageHistory.findMany({
+        orderBy: { id: "desc" },
+        take: limit,
+        select: {
+          timestamp: true,
+          provider: true,
+          model: true,
+          connectionId: true,
+          promptTokens: true,
+          completionTokens: true,
+          status: true,
+          tokens: true,
+        },
+      })
+      : (await getAdapter()).all(
+        `SELECT timestamp, provider, model, connectionId, promptTokens, completionTokens, status, tokens FROM usageHistory ORDER BY id DESC LIMIT ?`,
+        [limit],
+      );
     if (!rows.length) return [];
 
     const connMap = {};

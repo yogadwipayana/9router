@@ -1,0 +1,77 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Only operational data selected for PostgreSQL lives here. Settings,
+// provider connections, provider nodes, proxy pools, combos, and kv stay local.
+model ApiKey {
+  id        String  @id
+  key       String  @unique
+  name      String?
+  owner     String?
+  machineId String?
+  isActive  Int?    @default(1)
+  createdAt String
+
+  @@index([key], map: "idx_ak_key")
+  @@map("apiKeys")
+}
+
+model OwnerUser {
+  email     String @id
+  budgetUsd Float  @default(0)
+  isActive  Int?   @default(1)
+  createdAt String
+  updatedAt String
+
+  @@map("ownerUsers")
+}
+
+model UsageHistory {
+  id               Int     @id @default(autoincrement())
+  timestamp        String
+  provider         String?
+  model            String?
+  connectionId     String?
+  apiKey           String?
+  endpoint         String?
+  promptTokens     Int?    @default(0)
+  completionTokens Int?    @default(0)
+  cost             Float?  @default(0)
+  status           String?
+  tokens           String?
+  meta             String?
+
+  @@index([timestamp], map: "idx_uh_ts")
+  @@index([provider], map: "idx_uh_provider")
+  @@index([model], map: "idx_uh_model")
+  @@index([connectionId], map: "idx_uh_conn")
+  @@map("usageHistory")
+}
+
+model UsageDaily {
+  dateKey String @id
+  data    String
+
+  @@map("usageDaily")
+}
+
+model RequestDetail {
+  id           String  @id
+  timestamp    String
+  provider     String?
+  model        String?
+  connectionId String?
+  status       String?
+  data         String
+
+  @@index([timestamp], map: "idx_rd_ts")
+  @@index([provider], map: "idx_rd_provider")
+  @@index([model], map: "idx_rd_model")
+  @@index([connectionId], map: "idx_rd_conn")
+  @@map("requestDetails")
+}

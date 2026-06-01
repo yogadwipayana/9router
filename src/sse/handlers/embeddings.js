@@ -5,7 +5,6 @@ import {
   extractApiKey,
   getApiKeyValidationError,
 } from "../services/auth.js";
-import { getSettings } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
 import { handleEmbeddingsCore } from "open-sse/handlers/embeddingsCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
@@ -38,17 +37,13 @@ export async function handleEmbeddings(request) {
   if (apiKey) {
     log.debug("AUTH", `API Key: ${log.maskKey(apiKey)}`);
   } else {
-    log.debug("AUTH", "No API key provided (local mode)");
+    log.debug("AUTH", "No API key provided");
   }
 
-  // Enforce API key if enabled in settings
-  const settings = await getSettings();
-  if (settings.requireApiKey) {
-    const apiKeyError = await getApiKeyValidationError(apiKey);
-    if (apiKeyError) {
-      log.warn("AUTH", `${apiKeyError.message} (requireApiKey=true)`);
-      return errorResponse(apiKeyError.status, apiKeyError.message);
-    }
+  const apiKeyError = await getApiKeyValidationError(apiKey);
+  if (apiKeyError) {
+    log.warn("AUTH", apiKeyError.message);
+    return errorResponse(apiKeyError.status, apiKeyError.message);
   }
 
   if (!modelStr) {

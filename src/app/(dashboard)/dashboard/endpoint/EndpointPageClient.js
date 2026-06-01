@@ -55,7 +55,6 @@ const CAVEMAN_LEVELS = [
   { id: "ultra", label: "Ultra", desc: "Telegraphic, max compression" },
 ];
 export default function APIPageClient({ machineId }) {
-  const [requireApiKey, setRequireApiKey] = useState(false);
   const [requireLogin, setRequireLogin] = useState(true);
   const [hasPassword, setHasPassword] = useState(true);
   const [tunnelDashboardAccess, setTunnelDashboardAccess] = useState(false);
@@ -222,7 +221,6 @@ export default function APIPageClient({ machineId }) {
       ]);
       if (settingsRes.ok) {
         const data = await settingsRes.json();
-        setRequireApiKey(data.requireApiKey || false);
         setRequireLogin(data.requireLogin !== false);
         setHasPassword(data.hasPassword || false);
         setTunnelDashboardAccess(data.tunnelDashboardAccess || false);
@@ -751,10 +749,6 @@ export default function APIPageClient({ machineId }) {
                     setTunnelStatus({ type: "error", message: `Security required: ${unsafeReason}` });
                     return;
                   }
-                  if (!requireApiKey) {
-                    setTunnelStatus({ type: "error", message: "Security required: Enable \"Require API key\" before activating the tunnel." });
-                    return;
-                  }
                   setShowEnableTunnelModal(true);
                 }}
               >
@@ -861,7 +855,7 @@ export default function APIPageClient({ machineId }) {
         {/* Security warnings when tunnel or tailscale is active */}
         {(tunnelEnabled || tsEnabled) && (
           <div className="mt-4 flex flex-col gap-2">
-            {!requireApiKey && (
+            {false && (
               <SecurityWarning
                 message="Require API key is disabled — your endpoint is publicly accessible without authentication."
                 action={{ label: "Enable", href: "/dashboard/api-key" }}

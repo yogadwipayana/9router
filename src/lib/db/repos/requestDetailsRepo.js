@@ -1,5 +1,6 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { getPrisma, usePostgresOperationalData } from "../../prisma.js";
 
 const DEFAULT_MAX_RECORDS = 200;
 const DEFAULT_BATCH_SIZE = 20;
@@ -68,6 +69,54 @@ function truncateField(obj, maxSize) {
   return obj || {};
 }
 
+function normalizeDetailRecord(item, config) {
+  const detail = { ...item };
+  if (!detail.id) detail.id = generateDetailId(detail.model);
+  if (!detail.timestamp) detail.timestamp = new Date().toISOString();
+  if (detail.request?.headers) {
+    detail.request = { ...detail.request, headers: sanitizeHeaders(detail.request.headers) };
+  }
+
+  const record = {
+    id: detail.id,
+    provider: detail.provider || null,
+    model: detail.model || null,
+    connectionId: detail.connectionId || null,
+    timestamp: detail.timestamp,
+    status: detail.status || null,
+    latency: detail.latency || {},
+    tokens: detail.tokens || {},
+    request: truncateField(detail.request, config.maxJsonSize),
+    providerRequest: truncateField(detail.providerRequest, config.maxJsonSize),
+    providerResponse: truncateField(detail.providerResponse, config.maxJsonSize),
+    response: truncateField(detail.response, config.maxJsonSize),
+  };
+
+  return {
+    id: record.id,
+    timestamp: record.timestamp,
+    provider: record.provider,
+    model: record.model,
+    connectionId: record.connectionId,
+    status: record.status,
+    data: stringifyJson(record),
+  };
+}
+
+function buildWhere(filter = {}) {
+  const where = {};
+  if (filter.provider) where.provider = filter.provider;
+  if (filter.model) where.model = filter.model;
+  if (filter.connectionId) where.connectionId = filter.connectionId;
+  if (filter.status) where.status = filter.status;
+  if (filter.startDate || filter.endDate) {
+    where.timestamp = {};
+    if (filter.startDate) where.timestamp.gte = new Date(filter.startDate).toISOString();
+    if (filter.endDate) where.timestamp.lte = new Date(filter.endDate).toISOString();
+  }
+  return where;
+}
+
 async function flushToDatabase() {
   if (isFlushing) return;
   if (writeBuffer.length === 0) return;
@@ -76,33 +125,49 @@ async function flushToDatabase() {
     // Drain entire buffer (loop in case more pushed during await)
     while (writeBuffer.length > 0) {
       const items = writeBuffer.splice(0, writeBuffer.length);
-      const db = await getAdapter();
       const config = await getObservabilityConfig();
+      const records = items.map((item) => normalizeDetailRecord(item, config));
+
+      if (usePostgresOperationalData()) {
+        const prisma = getPrisma();
+        await prisma.$transaction(async (tx) => {
+          for (const record of records) {
+            await tx.requestDetail.upsert({
+              where: { id: record.id },
+              create: record,
+              update: {
+                timestamp: record.timestamp,
+                provider: record.provider,
+                model: record.model,
+                connectionId: record.connectionId,
+                status: record.status,
+                data: record.data,
+              },
+            });
+          }
+
+          const count = await tx.requestDetail.count();
+          if (count > config.maxRecords) {
+            const stale = await tx.requestDetail.findMany({
+              orderBy: { timestamp: "asc" },
+              take: count - config.maxRecords,
+              select: { id: true },
+            });
+            if (stale.length > 0) {
+              await tx.requestDetail.deleteMany({ where: { id: { in: stale.map((row) => row.id) } } });
+            }
+          }
+        });
+        continue;
+      }
+
+      const db = await getAdapter();
 
       db.transaction(() => {
-        for (const item of items) {
-          if (!item.id) item.id = generateDetailId(item.model);
-          if (!item.timestamp) item.timestamp = new Date().toISOString();
-          if (item.request?.headers) item.request.headers = sanitizeHeaders(item.request.headers);
-
-          const record = {
-            id: item.id,
-            provider: item.provider || null,
-            model: item.model || null,
-            connectionId: item.connectionId || null,
-            timestamp: item.timestamp,
-            status: item.status || null,
-            latency: item.latency || {},
-            tokens: item.tokens || {},
-            request: truncateField(item.request, config.maxJsonSize),
-            providerRequest: truncateField(item.providerRequest, config.maxJsonSize),
-            providerResponse: truncateField(item.providerResponse, config.maxJsonSize),
-            response: truncateField(item.response, config.maxJsonSize),
-          };
-
+        for (const record of records) {
           db.run(
             `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp, provider = excluded.provider, model = excluded.model, connectionId = excluded.connectionId, status = excluded.status, data = excluded.data`,
-            [record.id, record.timestamp, record.provider, record.model, record.connectionId, record.status, stringifyJson(record)]
+            [record.id, record.timestamp, record.provider, record.model, record.connectionId, record.status, record.data]
           );
         }
 
@@ -142,6 +207,30 @@ export async function saveRequestDetail(detail) {
 }
 
 export async function getRequestDetails(filter = {}) {
+  if (usePostgresOperationalData()) {
+    const prisma = getPrisma();
+    const where = buildWhere(filter);
+    const page = filter.page || 1;
+    const pageSize = filter.pageSize || 50;
+    const offset = (page - 1) * pageSize;
+    const [totalItems, rows] = await Promise.all([
+      prisma.requestDetail.count({ where }),
+      prisma.requestDetail.findMany({
+        where,
+        orderBy: { timestamp: "desc" },
+        take: pageSize,
+        skip: offset,
+        select: { data: true },
+      }),
+    ]);
+    const totalPages = Math.ceil(totalItems / pageSize);
+
+    return {
+      details: rows.map((r) => parseJson(r.data, {})),
+      pagination: { page, pageSize, totalItems, totalPages, hasNext: page < totalPages, hasPrev: page > 1 },
+    };
+  }
+
   const db = await getAdapter();
   const conds = [];
   const params = [];
@@ -175,6 +264,11 @@ export async function getRequestDetails(filter = {}) {
 }
 
 export async function getRequestDetailById(id) {
+  if (usePostgresOperationalData()) {
+    const row = await getPrisma().requestDetail.findUnique({ where: { id }, select: { data: true } });
+    return row ? parseJson(row.data, null) : null;
+  }
+
   const db = await getAdapter();
   const row = db.get(`SELECT data FROM requestDetails WHERE id = ?`, [id]);
   return row ? parseJson(row.data, null) : null;
@@ -186,6 +280,11 @@ export async function resetRequestDetails() {
     flushTimer = null;
   }
   writeBuffer = [];
+
+  if (usePostgresOperationalData()) {
+    await getPrisma().requestDetail.deleteMany();
+    return;
+  }
 
   const db = await getAdapter();
   db.run(`DELETE FROM requestDetails`);

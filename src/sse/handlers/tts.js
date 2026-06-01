@@ -32,12 +32,10 @@ export async function handleTts(request) {
   const language = body.language || ""; // Optional language hint (currently used by Gemini)
   log.request("POST", `${url.pathname} | ${modelStr} | format=${responseFormat}${language ? ` | lang=${language}` : ""}`);
 
+  const apiKey = extractApiKey(request);
   const settings = await getSettings();
-  if (settings.requireApiKey) {
-    const apiKey = extractApiKey(request);
-    const apiKeyError = await getApiKeyValidationError(apiKey);
-    if (apiKeyError) return errorResponse(apiKeyError.status, apiKeyError.message);
-  }
+  const apiKeyError = await getApiKeyValidationError(apiKey);
+  if (apiKeyError) return errorResponse(apiKeyError.status, apiKeyError.message);
 
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!body.input) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: input");

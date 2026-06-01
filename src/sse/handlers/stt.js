@@ -2,7 +2,6 @@ import {
   extractApiKey, getApiKeyValidationError,
   getProviderCredentials, markAccountUnavailable,
 } from "../services/auth.js";
-import { getSettings } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
 import { handleSttCore } from "open-sse/handlers/sttCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
@@ -28,12 +27,9 @@ export async function handleStt(request) {
   const modelStr = formData.get("model");
   log.request("POST", `/v1/audio/transcriptions | ${modelStr}`);
 
-  const settings = await getSettings();
-  if (settings.requireApiKey) {
-    const apiKey = extractApiKey(request);
-    const apiKeyError = await getApiKeyValidationError(apiKey);
-    if (apiKeyError) return errorResponse(apiKeyError.status, apiKeyError.message);
-  }
+  const apiKey = extractApiKey(request);
+  const apiKeyError = await getApiKeyValidationError(apiKey);
+  if (apiKeyError) return errorResponse(apiKeyError.status, apiKeyError.message);
 
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!formData.get("file")) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: file");

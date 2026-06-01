@@ -63,17 +63,14 @@ export async function handleChat(request, clientRawRequest = null) {
     const masked = log.maskKey(apiKey);
     log.debug("AUTH", `API Key: ${masked}`);
   } else {
-    log.debug("AUTH", "No API key provided (local mode)");
+    log.debug("AUTH", "No API key provided");
   }
 
-  // Enforce API key if enabled in settings
   const settings = await getSettings();
-  if (settings.requireApiKey) {
-    const apiKeyError = await getApiKeyValidationError(apiKey);
-    if (apiKeyError) {
-      log.warn("AUTH", `${apiKeyError.message} (requireApiKey=true)`);
-      return errorResponse(apiKeyError.status, apiKeyError.message);
-    }
+  const apiKeyError = await getApiKeyValidationError(apiKey);
+  if (apiKeyError) {
+    log.warn("AUTH", apiKeyError.message);
+    return errorResponse(apiKeyError.status, apiKeyError.message);
   }
 
   if (!modelStr) {

@@ -37,10 +37,8 @@ export async function handleImageGeneration(request) {
 
   const apiKey = extractApiKey(request);
   const settings = await getSettings();
-  if (settings.requireApiKey) {
-    const apiKeyError = await getApiKeyValidationError(apiKey);
-    if (apiKeyError) return errorResponse(apiKeyError.status, apiKeyError.message);
-  }
+  const apiKeyError = await getApiKeyValidationError(apiKey);
+  if (apiKeyError) return errorResponse(apiKeyError.status, apiKeyError.message);
 
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!body.prompt) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: prompt");

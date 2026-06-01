@@ -54,39 +54,49 @@ describe("dashboard guard public LLM API access", () => {
     mocks.verifyDashboardAuthToken.mockResolvedValue(false);
   });
 
-  it("allows loopback public LLM API without API key", async () => {
+  it("rejects loopback public LLM API without API key", async () => {
     const response = await proxy(request("/v1/chat/completions", { host: "localhost:20128" }));
 
-    expect(response).toBe(mocks.nextResponse);
-    expect(mocks.getApiKeyAccessState).not.toHaveBeenCalled();
+    expect(response.status).toBe(401);
+    expect(response.body.error).toBe("API key required");
   });
 
   it("rejects remote rewritten public LLM API without API key", async () => {
     const response = await proxy(request("/api/v1/chat/completions", { host: "router.example.com" }));
 
     expect(response.status).toBe(401);
-    expect(response.body.error).toBe("API key required for remote API access");
+    expect(response.body.error).toBe("API key required");
   });
 
-  it("allows loopback rewritten public LLM API without API key", async () => {
+  it("rejects loopback rewritten public LLM API without API key", async () => {
     const response = await proxy(request("/api/v1/chat/completions", { host: "localhost:20128" }));
 
-    expect(response).toBe(mocks.nextResponse);
-    expect(mocks.getApiKeyAccessState).not.toHaveBeenCalled();
+    expect(response.status).toBe(401);
+    expect(response.body.error).toBe("API key required");
   });
 
   it("rejects remote beta public LLM API without API key", async () => {
     const response = await proxy(request("/v1beta/models", { host: "router.example.com" }));
 
     expect(response.status).toBe(401);
-    expect(response.body.error).toBe("API key required for remote API access");
+    expect(response.body.error).toBe("API key required");
   });
 
   it("rejects remote rewritten beta public LLM API without API key", async () => {
     const response = await proxy(request("/api/v1beta/models", { host: "router.example.com" }));
 
     expect(response.status).toBe(401);
-    expect(response.body.error).toBe("API key required for remote API access");
+    expect(response.body.error).toBe("API key required");
+  });
+
+  it("rejects public LLM API with CLI token but no API key", async () => {
+    const response = await proxy(request("/api/v1/chat/completions", {
+      host: "localhost:20128",
+      "x-9r-cli-token": "cli-token",
+    }));
+
+    expect(response.status).toBe(401);
+    expect(response.body.error).toBe("API key required");
   });
 
   it("allows remote public LLM API with valid bearer API key", async () => {

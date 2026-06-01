@@ -1,0 +1,8 @@
+⨯ Another next dev server is already running.
+
+- Local:        http://localhost:20128
+- PID:          22744
+- Dir:          C:\Users\YOGA\Documents\9router
+- Log:          .next\dev\logs\next-development.log
+
+Run taskkill /PID 22744 /F to stop it.

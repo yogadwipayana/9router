@@ -1,4 +1,5 @@
 import { getAdapter } from "../driver.js";
+import { getPrisma, usePostgresOperationalData } from "../../prisma.js";
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -81,6 +82,37 @@ function getUsageStats(db) {
 }
 
 export async function getOwnerUsers() {
+  if (usePostgresOperationalData()) {
+    const prisma = getPrisma();
+    const rows = await prisma.ownerUser.findMany({ orderBy: { email: "asc" } });
+    const byEmail = Object.fromEntries(rows.map((row) => [row.email, row]));
+    const keyStatsRows = await prisma.$queryRaw`
+      SELECT lower("owner") AS email, COUNT(*)::int AS "keyCount"
+      FROM "apiKeys"
+      WHERE "owner" IS NOT NULL AND btrim("owner") != ''
+      GROUP BY lower("owner")
+    `;
+    const usageStatsRows = await prisma.$queryRaw`
+      SELECT lower(k."owner") AS email, COUNT(h."id")::int AS "requestCount", COALESCE(SUM(h."cost"), 0)::float8 AS "spentUsd"
+      FROM "usageHistory" h
+      JOIN "apiKeys" k ON h."apiKey" = k."key"
+      WHERE k."owner" IS NOT NULL AND btrim(k."owner") != ''
+      GROUP BY lower(k."owner")
+    `;
+    const keyStats = Object.fromEntries(keyStatsRows.map((row) => [row.email, row]));
+    const usageStats = Object.fromEntries(usageStatsRows.map((row) => [row.email, row]));
+
+    const emails = new Set([
+      ...Object.keys(byEmail),
+      ...Object.keys(keyStats),
+      ...Object.keys(usageStats),
+    ]);
+
+    return [...emails]
+      .sort((a, b) => a.localeCompare(b))
+      .map((email) => mergeOwnerStats(byEmail[email], keyStats[email], usageStats[email]));
+  }
+
   const db = await getAdapter();
   const rows = db.all(`SELECT * FROM ownerUsers ORDER BY email ASC`);
   const byEmail = Object.fromEntries(rows.map((row) => [row.email, row]));
@@ -100,6 +132,11 @@ export async function getOwnerUsers() {
 
 export async function getOwnerUserByEmail(email) {
   const normalized = assertEmail(email);
+  if (usePostgresOperationalData()) {
+    const row = await getPrisma().ownerUser.findUnique({ where: { email: normalized } });
+    return rowToOwnerUser(row);
+  }
+
   const db = await getAdapter();
   const row = db.get(`SELECT * FROM ownerUsers WHERE email = ?`, [normalized]);
   return rowToOwnerUser(row);
@@ -108,9 +145,28 @@ export async function getOwnerUserByEmail(email) {
 export async function upsertOwnerUser({ email, budgetUsd, isActive = true }) {
   const normalized = assertEmail(email);
   const budget = normalizeBudget(budgetUsd);
-  const db = await getAdapter();
   const now = new Date().toISOString();
 
+  if (usePostgresOperationalData()) {
+    await getPrisma().ownerUser.upsert({
+      where: { email: normalized },
+      create: {
+        email: normalized,
+        budgetUsd: budget,
+        isActive: isActive === false ? 0 : 1,
+        createdAt: now,
+        updatedAt: now,
+      },
+      update: {
+        budgetUsd: budget,
+        isActive: isActive === false ? 0 : 1,
+        updatedAt: now,
+      },
+    });
+    return await getOwnerUserByEmail(normalized);
+  }
+
+  const db = await getAdapter();
   db.run(
     `INSERT INTO ownerUsers(email, budgetUsd, isActive, createdAt, updatedAt)
      VALUES(?, ?, ?, ?, ?)
@@ -127,9 +183,26 @@ export async function upsertOwnerUser({ email, budgetUsd, isActive = true }) {
 export async function addOwnerBudget(email, amountUsd) {
   const normalized = assertEmail(email);
   const amount = normalizeBudgetIncrement(amountUsd);
-  const db = await getAdapter();
   const now = new Date().toISOString();
 
+  if (usePostgresOperationalData()) {
+    let exists = false;
+    await getPrisma().$transaction(async (tx) => {
+      const row = await tx.ownerUser.findUnique({ where: { email: normalized } });
+      if (!row) return;
+      exists = true;
+      const nextBudget = Number(row.budgetUsd || 0) + amount;
+      await tx.ownerUser.update({
+        where: { email: normalized },
+        data: { budgetUsd: nextBudget, updatedAt: now },
+      });
+    });
+
+    if (!exists) throw new Error("User budget not found");
+    return await getOwnerBudgetState(normalized);
+  }
+
+  const db = await getAdapter();
   let exists = false;
   db.transaction(() => {
     const row = db.get(`SELECT budgetUsd FROM ownerUsers WHERE email = ?`, [normalized]);
@@ -148,6 +221,11 @@ export async function addOwnerBudget(email, amountUsd) {
 
 export async function deleteOwnerUser(email) {
   const normalized = assertEmail(email);
+  if (usePostgresOperationalData()) {
+    const res = await getPrisma().ownerUser.deleteMany({ where: { email: normalized } });
+    return res.count > 0;
+  }
+
   const db = await getAdapter();
   const res = db.run(`DELETE FROM ownerUsers WHERE email = ?`, [normalized]);
   return (res?.changes ?? 0) > 0;
@@ -157,6 +235,18 @@ export async function getOwnerBudgetState(email) {
   const normalized = normalizeEmail(email);
   if (!EMAIL_PATTERN.test(normalized)) {
     return { configured: false, email: normalized || null, budgetUsd: null, spentUsd: 0, remainingUsd: null, isActive: true };
+  }
+
+  if (usePostgresOperationalData()) {
+    const prisma = getPrisma();
+    const row = await prisma.ownerUser.findUnique({ where: { email: normalized } });
+    const usageRows = await prisma.$queryRaw`
+      SELECT COUNT(h."id")::int AS "requestCount", COALESCE(SUM(h."cost"), 0)::float8 AS "spentUsd"
+      FROM "usageHistory" h
+      JOIN "apiKeys" k ON h."apiKey" = k."key"
+      WHERE lower(k."owner") = ${normalized}
+    `;
+    return mergeOwnerStats(row, null, { email: normalized, ...(usageRows[0] || {}) });
   }
 
   const db = await getAdapter();
