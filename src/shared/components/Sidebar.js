@@ -35,6 +35,7 @@ const systemItems = [
 ];
 
 const adminItems = [
+  { href: "/dashboard/users", label: "User", icon: "group" },
   { href: "/dashboard/api-key", label: "API Key", icon: "key" },
   { href: "/dashboard/models", label: "Models", icon: "model_training" },
   { href: "/dashboard/pricing", label: "Pricing", icon: "sell" },

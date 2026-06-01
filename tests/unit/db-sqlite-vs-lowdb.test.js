@@ -48,14 +48,15 @@ describe("DB SQLite layer — public API parity", () => {
   });
 
   it("apiKeys: create/get/validate/delete", async () => {
-    const k = await sqliteDb.createApiKey("test-key", "machine-abc");
+    const k = await sqliteDb.createApiKey("test-key", "machine-abc", "owner@example.com");
     expect(k.id).toBeDefined();
     expect(k.key).toMatch(/^sk-/);
+    expect(k.owner).toBe("owner@example.com");
     expect(k.machineId).toBe("machine-abc");
     expect(k.isActive).toBe(true);
 
     const all = await sqliteDb.getApiKeys();
-    expect(all.find((x) => x.id === k.id)).toBeDefined();
+    expect(all.find((x) => x.id === k.id)?.owner).toBe("owner@example.com");
 
     expect(await sqliteDb.validateApiKey(k.key)).toBeTruthy();
     expect(await sqliteDb.validateApiKey("invalid")).toBeFalsy();
@@ -63,6 +64,56 @@ describe("DB SQLite layer — public API parity", () => {
     const deleted = await sqliteDb.deleteApiKey(k.id);
     expect(deleted).toBe(true);
     expect(await sqliteDb.getApiKeyById(k.id)).toBeNull();
+  });
+
+  it("ownerUsers: budget CRUD and api key access", async () => {
+    const k = await sqliteDb.createApiKey("budget-key", "machine-abc", "budget@example.com");
+    expect(await sqliteDb.validateApiKey(k.key)).toBe(true);
+
+    const user = await sqliteDb.upsertOwnerUser({ email: "budget@example.com", budgetUsd: 0, isActive: true });
+    expect(user.budgetUsd).toBe(0);
+
+    const state = await sqliteDb.getApiKeyAccessState(k.key);
+    expect(state.valid).toBe(false);
+    expect(state.reason).toBe("owner_budget_exhausted");
+
+    const toppedUp = await sqliteDb.addOwnerBudget("budget@example.com", 10);
+    expect(toppedUp.budgetUsd).toBe(10);
+    expect(toppedUp.remainingUsd).toBe(10);
+    expect(await sqliteDb.validateApiKey(k.key)).toBe(true);
+
+    await sqliteDb.updatePricing({ openai: { "gpt-budget": { input: 1000000, output: 0 } } });
+    await sqliteDb.saveRequestUsage({
+      provider: "openai",
+      model: "gpt-budget",
+      apiKey: k.key,
+      tokens: { prompt_tokens: 1, completion_tokens: 0 },
+      endpoint: "/v1/chat/completions",
+      status: "ok",
+    });
+    const spent = await sqliteDb.getOwnerBudgetState("budget@example.com");
+    expect(spent.spentUsd).toBe(1);
+
+    await sqliteDb.upsertOwnerUser({ email: "budget@example.com", budgetUsd: 1, isActive: true });
+    const exhausted = await sqliteDb.getApiKeyAccessState(k.key);
+    expect(exhausted.valid).toBe(false);
+    expect(exhausted.reason).toBe("owner_budget_exhausted");
+
+    const reset = await sqliteDb.resetUsageForOwner("budget@example.com");
+    expect(reset.deleted).toBe(1);
+    const resetUser = await sqliteDb.getOwnerBudgetState("budget@example.com");
+    expect(resetUser.spentUsd).toBe(0);
+    expect(resetUser.remainingUsd).toBe(1);
+    expect(await sqliteDb.validateApiKey(k.key)).toBe(true);
+
+    await sqliteDb.upsertOwnerUser({ email: "budget@example.com", budgetUsd: 10, isActive: false });
+    const disabled = await sqliteDb.getApiKeyAccessState(k.key);
+    expect(disabled.valid).toBe(false);
+    expect(disabled.reason).toBe("owner_disabled");
+
+    expect(await sqliteDb.deleteOwnerUser("budget@example.com")).toBe(true);
+    expect(await sqliteDb.validateApiKey(k.key)).toBe(true);
+    await sqliteDb.deleteApiKey(k.id);
   });
 
   it("providerConnections: CRUD + reorder by priority", async () => {

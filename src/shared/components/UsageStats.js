@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { FREE_PROVIDERS, AI_PROVIDERS } from "@/shared/constants/providers";
+import { useNotificationStore } from "@/store/notificationStore";
 
 // Keep providers without serviceKinds (default LLM) or with "llm" in serviceKinds
 function isLLMProvider(id) {
@@ -11,7 +12,10 @@ function isLLMProvider(id) {
   return p.serviceKinds.includes("llm");
 }
 import Badge from "./Badge";
+import Button from "./Button";
 import Card from "./Card";
+import Input from "./Input";
+import Modal from "./Modal";
 import OverviewCards from "@/app/(dashboard)/dashboard/usage/components/OverviewCards";
 import UsageTable, { fmt, fmtTime } from "@/app/(dashboard)/dashboard/usage/components/UsageTable";
 import ProviderTopology from "@/app/(dashboard)/dashboard/usage/components/ProviderTopology";
@@ -37,12 +41,24 @@ function TimeAgo({ timestamp }) {
   return <>{timeAgo(timestamp)}</>;
 }
 
-function RecentRequests({ requests = [] }) {
+function RecentRequests({ requests = [], onResetUsage, resetting = false }) {
   return (
     <Card className="flex min-w-0 flex-col overflow-hidden" padding="sm" style={{ height: 480 }}>
       {/* Header */}
-      <div className="px-1 py-2 border-b border-border shrink-0">
+      <div className="flex items-center justify-between gap-2 px-1 py-2 border-b border-border shrink-0">
         <span className="text-xs font-semibold text-text-muted uppercase tracking-wide">Recent Requests</span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          icon="restart_alt"
+          loading={resetting}
+          onClick={onResetUsage}
+          className="h-7 shrink-0 px-2 text-[11px] text-error hover:bg-error/10 hover:text-error"
+          title="Reset usage statistics and request history"
+        >
+          Reset Usage
+        </Button>
       </div>
 
       {!requests.length ? (
@@ -52,10 +68,10 @@ function RecentRequests({ requests = [] }) {
           <table className="w-full table-fixed border-collapse text-xs">
             <colgroup>
               <col style={{ width: 16 }} />
-              <col style={{ width: 100 }} />
-              <col style={{ width: 100 }} />
-              <col style={{ width: 100 }} />
-              <col style={{ width: 100 }} />
+              <col style={{ width: 50 }} />
+              <col style={{ width: 70 }} />
+              <col style={{ width: 70 }} />
+              <col style={{ width: 50 }} />
             </colgroup>
             <thead className="sticky top-0 bg-bg z-10">
               <tr className="border-b border-border">
@@ -75,14 +91,14 @@ function RecentRequests({ requests = [] }) {
                     <td className="py-1.5">
                       <span className={`block w-1.5 h-1.5 rounded-full ${ok ? "bg-success" : "bg-error"}`} />
                     </td>
-                    <td className="py-1.5 font-mono truncate max-w-[160px]" title={r.model}>{r.model}</td>
-                    <td className="py-1.5 pl-3 whitespace-nowrap text-text-muted" title={keyLabel}>{keyLabel}</td>
-                    <td className="py-1.5 pl-3 text-right whitespace-nowrap">
+                    <td className="py-1.5 font-mono truncate max-w-[50px]" title={r.model}>{r.model}</td>
+                    <td className="py-1.5 pl-3 truncate max-w-[70px] text-text-muted" title={keyLabel}>{keyLabel}</td>
+                    <td className="py-1.5 pl-3 text-right truncate max-w-[70px] whitespace-nowrap">
                       <span className="text-primary">{fmt(r.promptTokens)}↑</span>
                       {" "}
                       <span className="text-success">{fmt(r.completionTokens)}↓</span>
                     </td>
-                    <td className="py-1.5 text-right text-text-muted whitespace-nowrap"><TimeAgo timestamp={r.timestamp} /></td>
+                    <td className="py-1.5 text-right text-text-muted truncate max-w-[50px] whitespace-nowrap"><TimeAgo timestamp={r.timestamp} /></td>
                   </tr>
                 );
               })}
@@ -213,9 +229,16 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
   const [viewMode, setViewMode] = useState("costs");
   const [providers, setProviders] = useState([]);
   const [periodLocal, setPeriodLocal] = useState("today");
+  const [resettingUsage, setResettingUsage] = useState(false);
+  const [resetModalOpen, setResetModalOpen] = useState(false);
+  const [resetPassword, setResetPassword] = useState("");
+  const [resetPasswordError, setResetPasswordError] = useState("");
+  const [chartRefreshKey, setChartRefreshKey] = useState(0);
   const isInitialLoad = useRef(true);
   const period = periodProp ?? periodLocal;
   const setPeriod = setPeriodProp ?? setPeriodLocal;
+  const notifySuccess = useNotificationStore((s) => s.success);
+  const notifyError = useNotificationStore((s) => s.error);
 
   // Fetch connected providers once, deduplicate by provider type
   // Always include noAuth free providers (e.g. opencode) regardless of connections
@@ -296,6 +319,58 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
     }
     router.replace(`?${params.toString()}`, { scroll: false });
   }, [searchParams, router]);
+
+  const openResetUsageModal = useCallback(() => {
+    setResetPassword("");
+    setResetPasswordError("");
+    setResetModalOpen(true);
+  }, []);
+
+  const closeResetUsageModal = useCallback(() => {
+    if (resettingUsage) return;
+    setResetModalOpen(false);
+    setResetPassword("");
+    setResetPasswordError("");
+  }, [resettingUsage]);
+
+  const handleResetUsage = useCallback(async (event) => {
+    event?.preventDefault();
+    if (resettingUsage) return;
+    if (!resetPassword.trim()) {
+      setResetPasswordError("Password is required");
+      return;
+    }
+
+    setResettingUsage(true);
+    setResetPasswordError("");
+    try {
+      const res = await fetch(`/api/usage/reset?period=${period}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({ password: resetPassword }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to reset usage");
+      }
+
+      setStats(data.stats || null);
+      setChartRefreshKey((value) => value + 1);
+      setResetModalOpen(false);
+      setResetPassword("");
+      notifySuccess("Usage statistics reset");
+    } catch (error) {
+      const message = error.message || "Failed to reset usage";
+      setResetPasswordError(message);
+      if (!message.toLowerCase().includes("password")) {
+        notifyError(message);
+      }
+    } finally {
+      setResettingUsage(false);
+    }
+  }, [notifyError, notifySuccess, period, resetPassword, resettingUsage]);
 
   // Compute active table data
   const activeTableConfig = useMemo(() => {
@@ -423,6 +498,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
   );
 
   return (
+    <>
     <div className="flex min-w-0 flex-col gap-6">
       {/* Period selector (hidden when controlled by parent) */}
       {!hidePeriodSelector && (
@@ -450,19 +526,23 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
 
       {/* Provider topology + Recent Requests */}
       {loading ? spinner : (
-        <div className="grid min-w-0 grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,3fr)_minmax(360px,2fr)]">
+        <div className="grid min-w-0 grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,2fr)_minmax(420px,3fr)]">
           <ProviderTopology
             providers={providers}
             activeRequests={stats.activeRequests || []}
             lastProvider={stats.recentRequests?.[0]?.provider || ""}
             errorProvider={stats.errorProvider || ""}
           />
-          <RecentRequests requests={stats.recentRequests || []} />
+          <RecentRequests
+            requests={stats.recentRequests || []}
+            onResetUsage={openResetUsageModal}
+            resetting={resettingUsage}
+          />
         </div>
       )}
 
       {/* Token / Cost chart - sync period */}
-      {loading ? spinner : <UsageChart period={period} />}
+      {loading ? spinner : <UsageChart key={chartRefreshKey} period={period} />}
 
       {/* Table with dropdown selector */}
       <div className="flex flex-col gap-3">
@@ -510,5 +590,49 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
         )}
       </div>
     </div>
+    <Modal
+      isOpen={resetModalOpen}
+      onClose={closeResetUsageModal}
+      title="Reset Usage"
+      size="sm"
+      closeOnOverlay={!resettingUsage}
+      footer={
+        <>
+          <Button variant="ghost" onClick={closeResetUsageModal} disabled={resettingUsage}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            form="reset-usage-form"
+            variant="danger"
+            icon="delete"
+            loading={resettingUsage}
+          >
+            Reset Usage
+          </Button>
+        </>
+      }
+    >
+      <form id="reset-usage-form" onSubmit={handleResetUsage} className="flex flex-col gap-4">
+        <p className="text-sm text-text-muted">
+          This deletes usage totals, request history, and request details. Enter the dashboard password to continue.
+        </p>
+        <Input
+          label="Password"
+          type="password"
+          value={resetPassword}
+          onChange={(event) => {
+            setResetPassword(event.target.value);
+            if (resetPasswordError) setResetPasswordError("");
+          }}
+          error={resetPasswordError}
+          disabled={resettingUsage}
+          placeholder="Enter password"
+          autoFocus
+          autoComplete="current-password"
+        />
+      </form>
+    </Modal>
+    </>
   );
 }

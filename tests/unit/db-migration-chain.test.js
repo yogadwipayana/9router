@@ -35,7 +35,7 @@ describe("Schema migrations", () => {
     const tables = db.all(`SELECT name FROM sqlite_master WHERE type='table'`).map(t => t.name);
     expect(tables).toEqual(expect.arrayContaining([
       "_meta", "settings", "providerConnections", "providerNodes",
-      "proxyPools", "apiKeys", "combos", "kv", "usageHistory", "usageDaily", "requestDetails",
+      "proxyPools", "apiKeys", "ownerUsers", "combos", "kv", "usageHistory", "usageDaily", "requestDetails",
     ]));
   });
 
@@ -64,7 +64,7 @@ describe("Schema migrations", () => {
     // Simulate user upgrading: place legacy JSON in DATA_DIR before first boot
     const legacy = {
       settings: { foo: "legacy-value" },
-      apiKeys: [{ id: "k1", key: "abc", name: "test", createdAt: new Date().toISOString() }],
+      apiKeys: [{ id: "k1", key: "abc", name: "test", owner: "legacy@example.com", createdAt: new Date().toISOString() }],
       modelAliases: { "gpt-4": "gpt-4-turbo" },
     };
     fs.writeFileSync(path.join(tempDir, "db.json"), JSON.stringify(legacy));
@@ -78,6 +78,7 @@ describe("Schema migrations", () => {
     const keys = db.all(`SELECT * FROM apiKeys`);
     expect(keys).toHaveLength(1);
     expect(keys[0].key).toBe("abc");
+    expect(keys[0].owner).toBe("legacy@example.com");
 
     const aliases = db.all(`SELECT * FROM kv WHERE scope='modelAliases'`);
     expect(aliases).toHaveLength(1);

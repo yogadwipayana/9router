@@ -76,11 +76,21 @@ export const TABLES = {
       id: "TEXT PRIMARY KEY",
       key: "TEXT UNIQUE NOT NULL",
       name: "TEXT",
+      owner: "TEXT",
       machineId: "TEXT",
       isActive: "INTEGER DEFAULT 1",
       createdAt: "TEXT NOT NULL",
     },
     indexes: ["CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)"],
+  },
+  ownerUsers: {
+    columns: {
+      email: "TEXT PRIMARY KEY",
+      budgetUsd: "REAL NOT NULL DEFAULT 0",
+      isActive: "INTEGER DEFAULT 1",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
   },
   combos: {
     columns: {

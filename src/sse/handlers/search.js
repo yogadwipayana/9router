@@ -3,7 +3,7 @@ import {
   markAccountUnavailable,
   clearAccountError,
   extractApiKey,
-  isValidApiKey,
+  getApiKeyValidationError,
 } from "../services/auth.js";
 import { getSettings, getCombos } from "@/lib/localDb";
 import { AI_PROVIDERS, resolveProviderId } from "@/shared/constants/providers.js";
@@ -47,14 +47,10 @@ export async function handleSearch(request) {
   // Enforce API key if enabled in settings
   const settings = await getSettings();
   if (settings.requireApiKey) {
-    if (!apiKey) {
-      log.warn("AUTH", "Missing API key (requireApiKey=true)");
-      return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
-    }
-    const valid = await isValidApiKey(apiKey);
-    if (!valid) {
-      log.warn("AUTH", "Invalid API key (requireApiKey=true)");
-      return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
+    const apiKeyError = await getApiKeyValidationError(apiKey);
+    if (apiKeyError) {
+      log.warn("AUTH", `${apiKeyError.message} (requireApiKey=true)`);
+      return errorResponse(apiKeyError.status, apiKeyError.message);
     }
   }
 

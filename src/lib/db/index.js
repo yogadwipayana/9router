@@ -29,8 +29,14 @@ export {
 
 // API keys
 export {
-  getApiKeys, getApiKeyById, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
+  getApiKeys, getApiKeyById, getApiKeyAccessState,
+  createApiKey, updateApiKey, deleteApiKey, validateApiKey,
 } from "./repos/apiKeysRepo.js";
+
+// Owner users / budgets
+export {
+  getOwnerUsers, getOwnerUserByEmail, upsertOwnerUser, addOwnerBudget, deleteOwnerUser, getOwnerBudgetState,
+} from "./repos/ownerUsersRepo.js";
 
 // Combos
 export {
@@ -60,12 +66,12 @@ export {
 export {
   statsEmitter, trackPendingRequest, getActiveRequests,
   saveRequestUsage, getUsageHistory, getUsageStats, getChartData,
-  appendRequestLog, getRecentLogs,
+  appendRequestLog, getRecentLogs, resetUsageData, resetUsageForOwner,
 } from "./repos/usageRepo.js";
 
 // Request details
 export {
-  saveRequestDetail, getRequestDetails, getRequestDetailById,
+  saveRequestDetail, getRequestDetails, getRequestDetailById, resetRequestDetails,
 } from "./repos/requestDetailsRepo.js";
 
 // Export/import full DB
@@ -78,7 +84,8 @@ export async function exportDb() {
     providerConnections: db.all(`SELECT * FROM providerConnections`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, provider: r.provider, authType: r.authType, name: r.name, email: r.email, priority: r.priority, isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     providerNodes: db.all(`SELECT * FROM providerNodes`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, type: r.type, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     proxyPools: db.all(`SELECT * FROM proxyPools`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, isActive: r.isActive === 1, testStatus: r.testStatus, createdAt: r.createdAt, updatedAt: r.updatedAt })),
-    apiKeys: db.all(`SELECT * FROM apiKeys`).map((r) => ({ id: r.id, key: r.key, name: r.name, machineId: r.machineId, isActive: r.isActive === 1, createdAt: r.createdAt })),
+    apiKeys: db.all(`SELECT * FROM apiKeys`).map((r) => ({ id: r.id, key: r.key, name: r.name, owner: r.owner || null, machineId: r.machineId, isActive: r.isActive === 1, createdAt: r.createdAt })),
+    ownerUsers: db.all(`SELECT * FROM ownerUsers`).map((r) => ({ email: r.email, budgetUsd: Number(r.budgetUsd || 0), isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     combos: db.all(`SELECT * FROM combos`).map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), createdAt: r.createdAt, updatedAt: r.updatedAt })),
     modelAliases: {},
     customModels: [],
@@ -111,6 +118,7 @@ export async function importDb(payload) {
     db.run(`DELETE FROM providerNodes`);
     db.run(`DELETE FROM proxyPools`);
     db.run(`DELETE FROM apiKeys`);
+    db.run(`DELETE FROM ownerUsers`);
     db.run(`DELETE FROM combos`);
     db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing', 'disabledModels', 'disabledProviders')`);
 
@@ -142,8 +150,15 @@ export async function importDb(payload) {
     }
     for (const k of payload.apiKeys || []) {
       db.run(
-        `INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, createdAt) VALUES(?, ?, ?, ?, ?, ?)`,
-        [k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1, k.createdAt || new Date().toISOString()]
+        `INSERT OR REPLACE INTO apiKeys(id, key, name, owner, machineId, isActive, createdAt) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+        [k.id, k.key, k.name || null, k.owner || null, k.machineId || null, k.isActive === false ? 0 : 1, k.createdAt || new Date().toISOString()]
+      );
+    }
+    for (const u of payload.ownerUsers || []) {
+      const now = new Date().toISOString();
+      db.run(
+        `INSERT OR REPLACE INTO ownerUsers(email, budgetUsd, isActive, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?)`,
+        [u.email, Number(u.budgetUsd || 0), u.isActive === false ? 0 : 1, u.createdAt || now, u.updatedAt || now]
       );
     }
     for (const c of payload.combos || []) {

@@ -7,6 +7,7 @@ const PENDING_TIMEOUT_MS = 60 * 1000;
 const RING_CAP = 50;
 const CONN_CACHE_TTL_MS = 30 * 1000;
 const PERIOD_MS = { "24h": 86400000, "7d": 604800000, "30d": 2592000000, "60d": 5184000000 };
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // In-memory state shared across Next.js modules
 if (!global._pendingRequests) global._pendingRequests = { byModel: {}, byAccount: {} };
@@ -32,6 +33,12 @@ export const statsEmitter = global._statsEmitter;
 function getLocalDateKey(timestamp) {
   const d = timestamp ? new Date(timestamp) : new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function normalizeOwnerEmail(email) {
+  const normalized = typeof email === "string" ? email.trim().toLowerCase() : "";
+  if (!EMAIL_PATTERN.test(normalized)) throw new Error("Valid email is required");
+  return normalized;
 }
 
 function addToCounter(target, key, values) {
@@ -76,6 +83,46 @@ function aggregateEntryToDay(day, entry) {
   const endpoint = entry.endpoint || "Unknown";
   const epKey = `${endpoint}|${entry.model}|${entry.provider || "unknown"}`;
   addToCounter(day.byEndpoint, epKey, { ...vals, meta: { endpoint, rawModel: entry.model, provider: entry.provider } });
+}
+
+function createEmptyDay() {
+  return {
+    requests: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    cost: 0,
+    byProvider: {},
+    byModel: {},
+    byAccount: {},
+    byApiKey: {},
+    byEndpoint: {},
+  };
+}
+
+function rebuildUsageDailyFromHistory(db) {
+  db.run(`DELETE FROM usageDaily`);
+  const rows = db.all(`SELECT timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens FROM usageHistory ORDER BY id ASC`);
+  const days = new Map();
+
+  for (const row of rows) {
+    const dateKey = getLocalDateKey(row.timestamp);
+    if (!days.has(dateKey)) days.set(dateKey, createEmptyDay());
+    aggregateEntryToDay(days.get(dateKey), {
+      timestamp: row.timestamp,
+      provider: row.provider,
+      model: row.model,
+      connectionId: row.connectionId,
+      apiKey: row.apiKey,
+      endpoint: row.endpoint,
+      cost: row.cost || 0,
+      status: row.status,
+      tokens: parseJson(row.tokens, {}),
+    });
+  }
+
+  for (const [dateKey, day] of days.entries()) {
+    db.run(`INSERT INTO usageDaily(dateKey, data) VALUES(?, ?)`, [dateKey, stringifyJson(day)]);
+  }
 }
 
 function pushToRing(entry) {
@@ -290,10 +337,7 @@ export async function saveRequestUsage(entry) {
 
       const dateKey = getLocalDateKey(entry.timestamp);
       const row = db.get(`SELECT data FROM usageDaily WHERE dateKey = ?`, [dateKey]);
-      const day = row ? parseJson(row.data, {}) : {
-        requests: 0, promptTokens: 0, completionTokens: 0, cost: 0,
-        byProvider: {}, byModel: {}, byAccount: {}, byApiKey: {}, byEndpoint: {},
-      };
+      const day = row ? parseJson(row.data, {}) : createEmptyDay();
       aggregateEntryToDay(day, entry);
       db.run(`INSERT INTO usageDaily(dateKey, data) VALUES(?, ?) ON CONFLICT(dateKey) DO UPDATE SET data = excluded.data`, [dateKey, stringifyJson(day)]);
 
@@ -715,6 +759,54 @@ export async function getChartData(period = "7d") {
       cost: dayData ? (dayData.cost || 0) : 0,
     };
   });
+}
+
+export async function resetUsageData() {
+  const db = await getAdapter();
+
+  db.transaction(() => {
+    db.run(`DELETE FROM usageHistory`);
+    db.run(`DELETE FROM usageDaily`);
+    db.run(`DELETE FROM _meta WHERE key = 'totalRequestsLifetime'`);
+    try {
+      db.run(`DELETE FROM sqlite_sequence WHERE name = 'usageHistory'`);
+    } catch {}
+  });
+
+  recentRing.items = [];
+  recentRing.initialized = true;
+  lastErrorProvider.provider = "";
+  lastErrorProvider.ts = 0;
+
+  statsEmitter.emit("update");
+}
+
+export async function resetUsageForOwner(email) {
+  const normalized = normalizeOwnerEmail(email);
+  const db = await getAdapter();
+  const keys = db.all(
+    `SELECT key FROM apiKeys WHERE lower(owner) = ?`,
+    [normalized]
+  ).map((row) => row.key).filter(Boolean);
+
+  if (keys.length === 0) {
+    return { deleted: 0, apiKeyCount: 0 };
+  }
+
+  const placeholders = keys.map(() => "?").join(", ");
+  let deleted = 0;
+  db.transaction(() => {
+    const result = db.run(`DELETE FROM usageHistory WHERE apiKey IN (${placeholders})`, keys);
+    deleted = result?.changes ?? 0;
+    rebuildUsageDailyFromHistory(db);
+  });
+
+  const keySet = new Set(keys);
+  recentRing.items = recentRing.items.filter((item) => !keySet.has(item.apiKey));
+  recentRing.initialized = true;
+  statsEmitter.emit("update");
+
+  return { deleted, apiKeyCount: keys.length };
 }
 
 function formatLogDate(date = new Date()) {

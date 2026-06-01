@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { getSettings, validateApiKey } from "@/lib/localDb";
+import { getSettings, getApiKeyAccessState } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { verifyDashboardAuthToken } from "@/lib/auth/dashboardSession";
+import { formatApiKeyAccessError, getApiKeyAccessStatus } from "@/shared/utils/apiKeyAccess.js";
 
 const CLI_TOKEN_HEADER = "x-9r-cli-token";
 const CLI_TOKEN_SALT = "9r-cli-auth";
@@ -47,6 +48,7 @@ const ALWAYS_PROTECTED = [
 // Require auth, but allow through if requireLogin is disabled
 const PROTECTED_API_PATHS = [
   "/api/settings",
+  "/api/users",
   "/api/keys",
   "/api/providers",
   "/api/provider-nodes",
@@ -110,9 +112,17 @@ function extractApiKey(request) {
 }
 
 async function hasValidApiKey(request) {
+  return (await getApiKeyAccessForRequest(request)).valid;
+}
+
+async function getApiKeyAccessForRequest(request) {
   const apiKey = extractApiKey(request);
-  if (!apiKey) return false;
-  return await validateApiKey(apiKey);
+  if (!apiKey) return { valid: false, reason: "missing" };
+  return await getApiKeyAccessState(apiKey);
+}
+
+function getApiKeyAccessError(state) {
+  return formatApiKeyAccessError(state, { fallback: "API key required for remote API access" });
 }
 
 async function canAccessPublicLlmApi(request) {
@@ -180,8 +190,10 @@ export async function proxy(request) {
   }
 
   if (isPublicLlmApi(pathname)) {
-    if (await canAccessPublicLlmApi(request)) return NextResponse.next();
-    return NextResponse.json({ error: "API key required for remote API access" }, { status: 401 });
+    if (isLocalRequest(request) || await hasValidCliToken(request)) return NextResponse.next();
+    const apiKeyState = await getApiKeyAccessForRequest(request);
+    if (apiKeyState.valid) return NextResponse.next();
+    return NextResponse.json({ error: getApiKeyAccessError(apiKeyState) }, { status: getApiKeyAccessStatus(apiKeyState) });
   }
 
   // Deny-by-default for /api/* — public allow-list bypasses, everything else requires auth.

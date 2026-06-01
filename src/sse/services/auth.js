@@ -1,8 +1,9 @@
-import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings } from "@/lib/localDb";
+import { getProviderConnections, getApiKeyAccessState, updateProviderConnection, getSettings } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
+import { formatApiKeyAccessError, getApiKeyAccessStatus } from "@/shared/utils/apiKeyAccess.js";
 import * as log from "../utils/logger.js";
 
 // Mutex to prevent race conditions during account selection
@@ -304,5 +305,26 @@ export function extractApiKey(request) {
  */
 export async function isValidApiKey(apiKey) {
   if (!apiKey) return false;
-  return await validateApiKey(apiKey);
+  return (await getApiKeyAccessState(apiKey)).valid;
+}
+
+export async function getApiKeyAuthState(apiKey) {
+  if (!apiKey) return { valid: false, reason: "missing" };
+  return await getApiKeyAccessState(apiKey);
+}
+
+export async function getApiKeyValidationError(apiKey) {
+  if (!apiKey) {
+    return { status: 401, message: "Missing API key", reason: "missing" };
+  }
+
+  const state = await getApiKeyAccessState(apiKey);
+  if (state.valid) return null;
+
+  return {
+    status: getApiKeyAccessStatus(state),
+    message: formatApiKeyAccessError(state),
+    reason: state.reason,
+    state,
+  };
 }

@@ -34,5 +34,8 @@ export {
   createApiKey,
   deleteApiKey,
   validateApiKey,
+  getOwnerUsers,
+  upsertOwnerUser,
+  deleteOwnerUser,
   isCloudEnabled,
 } from "@/lib/localDb";
