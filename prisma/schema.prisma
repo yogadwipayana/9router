@@ -7,7 +7,8 @@ datasource db {
 }
 
 // Only operational data selected for PostgreSQL lives here. Settings,
-// provider connections, provider nodes, proxy pools, combos, and kv stay local.
+// provider connections, provider nodes, proxy pools, combos, request details,
+// and most kv stay local.
 model ApiKey {
   id        String  @id
   key       String  @unique
@@ -60,18 +61,19 @@ model UsageDaily {
   @@map("usageDaily")
 }
 
-model RequestDetail {
-  id           String  @id
-  timestamp    String
-  provider     String?
-  model        String?
-  connectionId String?
-  status       String?
-  data         String
+model EnabledModel {
+  providerAlias String
+  modelId       String
+  createdAt     String
 
-  @@index([timestamp], map: "idx_rd_ts")
-  @@index([provider], map: "idx_rd_provider")
-  @@index([model], map: "idx_rd_model")
-  @@index([connectionId], map: "idx_rd_conn")
-  @@map("requestDetails")
+  @@id([providerAlias, modelId])
+  @@index([providerAlias], map: "idx_em_provider")
+  @@map("enabledModels")
+}
+
+model EnabledProvider {
+  providerAlias String @id
+  createdAt     String
+
+  @@map("enabledProviders")
 }

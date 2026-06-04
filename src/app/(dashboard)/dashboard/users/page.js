@@ -1,13 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Card, ConfirmModal, Input, Modal, Skeleton, Toggle } from "@/shared/components";
 import { useHeaderSearchStore } from "@/store/headerSearchStore";
 import { useNotificationStore } from "@/store/notificationStore";
 import { cn } from "@/shared/utils/cn";
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const USER_TABLE_COLUMNS = "md:grid-cols-[minmax(0,1fr)_5.75rem_5.75rem_3.5rem_6rem_12rem] lg:grid-cols-[minmax(18rem,1fr)_6.25rem_6.25rem_4rem_6.5rem_13.5rem] xl:grid-cols-[minmax(24rem,1fr)_6.5rem_6.5rem_4.5rem_6.5rem_14rem]";
+const USER_TABLE_COLUMNS = "md:grid-cols-[minmax(0,1fr)_5.75rem_5.75rem_3.5rem_6rem_4rem] xl:grid-cols-[minmax(20rem,1fr)_6.25rem_6.25rem_4rem_6.5rem_4rem] 2xl:grid-cols-[minmax(32rem,1fr)_6.5rem_6.5rem_4.5rem_6.5rem_4rem]";
+const ACTION_MENU_WIDTH = 176;
 
 function formatUsd(value) {
   if (value === null || value === undefined) return "No limit";
@@ -431,15 +432,87 @@ function SummaryCard({ icon, label, value }) {
 }
 
 function UserRow({ user, onEdit, onTopUp, onResetUsage, onToggle, onRemove }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
+  const menuRef = useRef(null);
+  const triggerRef = useRef(null);
   const state = getUserState(user);
   const progress = getProgress(user);
   const hasUsage = Number(user.spentUsd || 0) > 0;
-  const limitReached = user.configured && user.remainingUsd !== null && user.remainingUsd <= 0;
   const statusClasses = {
     default: "bg-surface-2 text-text-muted",
     success: "bg-green-500/10 text-green-600 dark:text-green-400",
     warning: "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400",
     danger: "bg-red-500/10 text-red-600 dark:text-red-400",
+  };
+  const actionItems = [
+    {
+      label: user.configured ? "Edit budget" : "Set budget",
+      onSelect: () => onEdit(user),
+    },
+    {
+      label: "Add budget",
+      disabled: !user.configured,
+      onSelect: () => onTopUp(user),
+    },
+    {
+      label: "Reset usage",
+      disabled: !user.configured || !hasUsage,
+      onSelect: () => onResetUsage(user),
+    },
+    user.configured && {
+      label: user.isActive ? "Disable user" : "Enable user",
+      onSelect: () => onToggle(user, !user.isActive),
+    },
+    {
+      label: "Remove budget",
+      disabled: !user.configured,
+      tone: "danger",
+      onSelect: () => onRemove(user),
+    },
+  ].filter(Boolean);
+
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+
+    const closeFromOutside = (event) => {
+      if (menuRef.current?.contains(event.target) || triggerRef.current?.contains(event.target)) return;
+      setMenuOpen(false);
+    };
+    const closeMenu = () => setMenuOpen(false);
+    const closeFromKey = (event) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+
+    document.addEventListener("mousedown", closeFromOutside);
+    document.addEventListener("keydown", closeFromKey);
+    window.addEventListener("resize", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+
+    return () => {
+      document.removeEventListener("mousedown", closeFromOutside);
+      document.removeEventListener("keydown", closeFromKey);
+      window.removeEventListener("resize", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+    };
+  }, [menuOpen]);
+
+  const toggleMenu = () => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (rect) {
+      const menuHeight = actionItems.length * 32 + 8;
+      setMenuPosition({
+        top: Math.max(8, Math.min(rect.top, window.innerHeight - menuHeight - 8)),
+        left: Math.max(8, rect.left - ACTION_MENU_WIDTH - 8),
+      });
+    }
+    setMenuOpen((open) => !open);
+  };
+
+  const runMenuAction = (item) => {
+    if (item.disabled) return;
+    setMenuOpen(false);
+    item.onSelect();
   };
 
   return (
@@ -468,61 +541,49 @@ function UserRow({ user, onEdit, onTopUp, onResetUsage, onToggle, onRemove }) {
 
         <div className="flex items-center justify-between gap-3 md:justify-end">
           <span className="text-xs text-text-muted md:hidden">Actions</span>
-          <div className="flex shrink-0 items-center justify-end gap-1 md:w-full">
-            <Toggle
-              size="sm"
-              checked={user.configured ? user.isActive : true}
-              onChange={(checked) => onToggle(user, checked)}
-            />
-            <ActionButton
-              icon="add_card"
-              label="Add budget"
-              disabled={!user.configured}
-              highlighted={limitReached}
-              onClick={() => onTopUp(user)}
-            />
-            <ActionButton
-              icon="restart_alt"
-              label="Reset usage"
-              disabled={!user.configured || !hasUsage}
-              onClick={() => onResetUsage(user)}
-            />
-            <ActionButton
-              icon={user.configured ? "edit" : "add"}
-              label={user.configured ? "Edit budget" : "Set budget"}
-              onClick={() => onEdit(user)}
-            />
-            <ActionButton
-              icon="delete"
-              label="Remove budget"
-              tone="danger"
-              disabled={!user.configured}
-              onClick={() => onRemove(user)}
-            />
-          </div>
+          <button
+            ref={triggerRef}
+            type="button"
+            aria-label={`Open actions for ${user.email}`}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={toggleMenu}
+            className={cn(
+              "inline-flex size-8 shrink-0 items-center justify-center rounded-[8px] text-text-muted transition-colors",
+              "hover:bg-surface-3 hover:text-primary focus:outline-none focus:ring-2 focus:ring-brand-500/30",
+              menuOpen && "bg-surface-3 text-primary"
+            )}
+          >
+            <span className="material-symbols-outlined text-[20px]">more_vert</span>
+          </button>
+          {menuOpen && (
+            <div
+              ref={menuRef}
+              role="menu"
+              style={{ top: `${menuPosition.top}px`, left: `${menuPosition.left}px`, width: `${ACTION_MENU_WIDTH}px` }}
+              className="fixed z-50 rounded-[10px] border border-border-subtle bg-surface py-1 shadow-[var(--shadow-elev)]"
+            >
+              {actionItems.map((item) => (
+                <button
+                  key={item.label}
+                  type="button"
+                  role="menuitem"
+                  disabled={item.disabled}
+                  onClick={() => runMenuAction(item)}
+                  className={cn(
+                    "block w-full px-3 py-2 text-left text-xs font-semibold text-text-main transition-colors",
+                    "hover:bg-surface-2 disabled:cursor-not-allowed disabled:text-text-muted/45 disabled:hover:bg-transparent",
+                    item.tone === "danger" && "text-red-500 hover:bg-red-500/10"
+                  )}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
-  );
-}
-
-function ActionButton({ icon, label, onClick, disabled = false, highlighted = false, tone = "default" }) {
-  return (
-    <button
-      type="button"
-      onClick={disabled ? undefined : onClick}
-      disabled={disabled}
-      title={label}
-      aria-label={label}
-      className={cn(
-        "inline-flex size-8 shrink-0 items-center justify-center rounded-[8px] text-text-muted transition-colors",
-        "hover:bg-surface-3 hover:text-primary disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-text-muted",
-        highlighted && !disabled && "bg-primary/10 text-primary hover:bg-primary/15",
-        tone === "danger" && "hover:bg-red-500/10 hover:text-red-500"
-      )}
-    >
-      <span className="material-symbols-outlined text-[17px]">{icon}</span>
-    </button>
   );
 }
 
@@ -546,7 +607,7 @@ function BudgetPreview({ label, value }) {
   );
 }
 
-function BudgetInput({ label = "Budget", value, onChange, error, placeholder = "25.00" }) {
+function BudgetInput({ label = "Budget", value, onChange, error, placeholder = "25.00", step = "1" }) {
   return (
     <div className="flex flex-col gap-1.5">
       <label className="text-sm font-medium text-text-main">
@@ -557,7 +618,7 @@ function BudgetInput({ label = "Budget", value, onChange, error, placeholder = "
         <input
           type="number"
           min="0"
-          step="0.01"
+          step={step}
           value={value}
           onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}

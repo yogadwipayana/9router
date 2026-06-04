@@ -53,7 +53,7 @@ export default function ProviderDetailPage() {
   const [thinkingMode, setThinkingMode] = useState("auto");
   const [suggestedModels, setSuggestedModels] = useState([]);
   const [kiloFreeModels, setKiloFreeModels] = useState([]);
-  const [disabledModelIds, setDisabledModelIds] = useState([]);
+  const [enabledModelIds, setEnabledModelIds] = useState([]);
   const [confirmState, setConfirmState] = useState(null);
   const [showAgRiskModal, setShowAgRiskModal] = useState(false);
   const [oneByOneRunning, setOneByOneRunning] = useState(false);
@@ -142,24 +142,20 @@ export default function ProviderDetailPage() {
     ? (providerNode?.prefix || providerId)
     : providerAlias;
 
-  const fetchDisabledModels = useCallback(async () => {
+  const fetchEnabledModels = useCallback(async () => {
     try {
-      const res = await fetch(`/api/models/disabled?providerAlias=${encodeURIComponent(providerStorageAlias)}`, { cache: "no-store" });
+      const res = await fetch(`/api/models/enabled?providerAlias=${encodeURIComponent(providerStorageAlias)}`, { cache: "no-store" });
       const data = await res.json();
-      if (res.ok) setDisabledModelIds(data.ids || []);
+      if (res.ok) setEnabledModelIds(data.ids || []);
     } catch (error) {
-      console.log("Error fetching disabled models:", error);
+      console.log("Error fetching enabled models:", error);
     }
   }, [providerStorageAlias]);
 
   const handleDisableModel = async (modelId) => {
     try {
-      const res = await fetch("/api/models/disabled", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerAlias: providerStorageAlias, ids: [modelId] }),
-      });
-      if (res.ok) await fetchDisabledModels();
+      const res = await fetch(`/api/models/enabled?providerAlias=${encodeURIComponent(providerStorageAlias)}&id=${encodeURIComponent(modelId)}`, { method: "DELETE" });
+      if (res.ok) await fetchEnabledModels();
     } catch (error) {
       console.log("Error disabling model:", error);
     }
@@ -167,8 +163,12 @@ export default function ProviderDetailPage() {
 
   const handleEnableModel = async (modelId) => {
     try {
-      const res = await fetch(`/api/models/disabled?providerAlias=${encodeURIComponent(providerStorageAlias)}&id=${encodeURIComponent(modelId)}`, { method: "DELETE" });
-      if (res.ok) await fetchDisabledModels();
+      const res = await fetch("/api/models/enabled", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerAlias: providerStorageAlias, ids: [modelId] }),
+      });
+      if (res.ok) await fetchEnabledModels();
     } catch (error) {
       console.log("Error enabling model:", error);
     }
@@ -182,12 +182,8 @@ export default function ProviderDetailPage() {
       onConfirm: async () => {
         setConfirmState(null);
         try {
-          const res = await fetch("/api/models/disabled", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ providerAlias: providerStorageAlias, ids }),
-          });
-          if (res.ok) await fetchDisabledModels();
+          const res = await fetch(`/api/models/enabled?providerAlias=${encodeURIComponent(providerStorageAlias)}`, { method: "DELETE" });
+          if (res.ok) await fetchEnabledModels();
         } catch (error) {
           console.log("Error disabling all models:", error);
         }
@@ -195,10 +191,15 @@ export default function ProviderDetailPage() {
     });
   };
 
-  const handleEnableAll = async () => {
+  const handleEnableAll = async (ids) => {
+    if (!Array.isArray(ids) || ids.length === 0) return;
     try {
-      const res = await fetch(`/api/models/disabled?providerAlias=${encodeURIComponent(providerStorageAlias)}`, { method: "DELETE" });
-      if (res.ok) await fetchDisabledModels();
+      const res = await fetch("/api/models/enabled", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerAlias: providerStorageAlias, ids }),
+      });
+      if (res.ok) await fetchEnabledModels();
     } catch (error) {
       console.log("Error enabling all models:", error);
     }
@@ -367,8 +368,8 @@ export default function ProviderDetailPage() {
   useEffect(() => {
     fetchConnections();
     fetchAliases();
-    fetchDisabledModels();
-  }, [fetchConnections, fetchAliases, fetchDisabledModels]);
+    fetchEnabledModels();
+  }, [fetchConnections, fetchAliases, fetchEnabledModels]);
 
   // Fetch suggested models from provider's public API (if configured)
   useEffect(() => {
@@ -851,9 +852,9 @@ export default function ProviderDetailPage() {
       ...models,
       ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
     ].filter((m) => !m.type || m.type === "llm");
-    const disabledSet = new Set(disabledModelIds);
-    const displayModels = allModels.filter((m) => !disabledSet.has(m.id));
-    const disabledDisplayModels = allModels.filter((m) => disabledSet.has(m.id));
+    const enabledSet = new Set(enabledModelIds);
+    const displayModels = allModels.filter((m) => enabledSet.has(m.id));
+    const disabledDisplayModels = allModels.filter((m) => !enabledSet.has(m.id));
     // Custom models added by user (stored as aliases: modelId → providerAlias/modelId)
     const customModels = Object.entries(modelAliases)
       .filter(([alias, fullModel]) => {
@@ -1355,16 +1356,16 @@ export default function ProviderDetailPage() {
               ...models,
               ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
             ].filter((m) => !m.type || m.type === "llm").map((m) => m.id);
-            const activeIds = allIds.filter((id) => !disabledModelIds.includes(id));
+            const disabledIds = allIds.filter((id) => !enabledModelIds.includes(id));
             return (
               <div className="flex gap-2">
-                {disabledModelIds.length > 0 && (
-                  <Button size="sm" variant="secondary" icon="restart_alt" onClick={handleEnableAll}>
+                {disabledIds.length > 0 && (
+                  <Button size="sm" variant="secondary" icon="restart_alt" onClick={() => handleEnableAll(disabledIds)}>
                     Active All
                   </Button>
                 )}
-                {activeIds.length > 0 && (
-                  <Button size="sm" variant="secondary" icon="block" onClick={() => handleDisableAll(activeIds)}>
+                {enabledModelIds.length > 0 && (
+                  <Button size="sm" variant="secondary" icon="block" onClick={() => handleDisableAll(enabledModelIds)}>
                     Disable All
                   </Button>
                 )}

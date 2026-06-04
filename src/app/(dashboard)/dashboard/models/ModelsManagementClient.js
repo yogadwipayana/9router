@@ -264,13 +264,13 @@ export default function ModelsManagementClient() {
     setModelDisabled(providerAlias, model.id, disabled);
 
     try {
-      const url = disabled
-        ? "/api/models/disabled"
-        : `/api/models/disabled?providerAlias=${encodeURIComponent(providerAlias)}&id=${encodeURIComponent(model.id)}`;
+      const url = enabled
+        ? "/api/models/enabled"
+        : `/api/models/enabled?providerAlias=${encodeURIComponent(providerAlias)}&id=${encodeURIComponent(model.id)}`;
       const response = await fetch(url, {
-        method: disabled ? "POST" : "DELETE",
-        headers: disabled ? { "Content-Type": "application/json" } : undefined,
-        body: disabled ? JSON.stringify({ providerAlias, ids: [model.id] }) : undefined,
+        method: enabled ? "POST" : "DELETE",
+        headers: enabled ? { "Content-Type": "application/json" } : undefined,
+        body: enabled ? JSON.stringify({ providerAlias, ids: [model.id] }) : undefined,
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data?.error || "Failed to update model");
@@ -296,13 +296,13 @@ export default function ModelsManagementClient() {
 
     try {
       const response = await fetch(
-        disabled
-          ? "/api/models/disabled-providers"
-          : `/api/models/disabled-providers?providerAlias=${encodeURIComponent(providerAlias)}&providerId=${encodeURIComponent(provider.id)}`,
+        enabled
+          ? "/api/models/enabled-providers"
+          : `/api/models/enabled-providers?providerAlias=${encodeURIComponent(providerAlias)}&providerId=${encodeURIComponent(provider.id)}`,
         {
-          method: disabled ? "POST" : "DELETE",
-          headers: disabled ? { "Content-Type": "application/json" } : undefined,
-          body: disabled ? JSON.stringify({ providerAlias, providerId: provider.id }) : undefined,
+          method: enabled ? "POST" : "DELETE",
+          headers: enabled ? { "Content-Type": "application/json" } : undefined,
+          body: enabled ? JSON.stringify({ providerAlias, providerId: provider.id }) : undefined,
         },
       );
       const data = await response.json();

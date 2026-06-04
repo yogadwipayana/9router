@@ -74,15 +74,15 @@ describe("DB Concurrency — atomic safety", () => {
         tokens: { prompt_tokens: 20 }, status: "ok",
       }));
       ops.push(db.setModelAlias(`a-${i}`, `target-${i}`));
-      ops.push(db.disableModels("openai", [`d-${i}`]));
+      ops.push(db.enableModels("openai", [`d-${i}`]));
     }
     await Promise.all(ops);
 
     const aliases = await db.getModelAliases();
     expect(Object.keys(aliases).filter((k) => k.startsWith("a-")).length).toBe(50);
 
-    const disabled = await db.getDisabledByProvider("openai");
-    expect(disabled.length).toBeGreaterThanOrEqual(50);
+    const enabled = await db.getEnabledByProvider("openai");
+    expect(enabled.length).toBeGreaterThanOrEqual(50);
 
     const stats = await db.getUsageStats("24h");
     expect(stats.byProvider.anthropic.requests).toBe(50);

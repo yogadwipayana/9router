@@ -8,6 +8,14 @@ import { checkLock, recordFail, recordSuccess, getClientIp } from "@/lib/auth/lo
 
 const RESET_HINT = "Forgot password? Reset to default via 9Router CLI → Settings → Reset Password to Default.";
 
+function normalizeEmail(email) {
+  return typeof email === "string" ? email.trim().toLowerCase() : "";
+}
+
+function getInitialEmail() {
+  return normalizeEmail(process.env.INITIAL_EMAIL);
+}
+
 function isTunnelRequest(request, settings) {
   const host = (request.headers.get("host") || "").split(":")[0].toLowerCase();
   const tunnelHost = settings.tunnelUrl ? new URL(settings.tunnelUrl).hostname.toLowerCase() : "";
@@ -26,7 +34,9 @@ export async function POST(request) {
       );
     }
 
-    const { password } = await request.json();
+    const body = await request.json().catch(() => ({}));
+    const email = normalizeEmail(body.email);
+    const password = typeof body.password === "string" ? body.password : "";
     const settings = await getSettings();
 
     // Block login via tunnel/tailscale if dashboard access is disabled
@@ -41,10 +51,20 @@ export async function POST(request) {
       return NextResponse.json({ error: "Password login is disabled. Use OIDC sign in." }, { status: 403 });
     }
 
+    if (!email || !password) {
+      return NextResponse.json({ error: "Email and password are required" }, { status: 400 });
+    }
+
+    const initialEmail = getInitialEmail();
+    if (!initialEmail) {
+      return NextResponse.json({ error: "INITIAL_EMAIL is not configured" }, { status: 500 });
+    }
+
+    const emailValid = email === initialEmail;
     let isValid = false;
-    if (storedHash) {
+    if (emailValid && storedHash) {
       isValid = await bcrypt.compare(password, storedHash);
-    } else {
+    } else if (emailValid) {
       // Use env var or default
       const initialPassword = process.env.INITIAL_PASSWORD || "123456";
       isValid = password === initialPassword;
@@ -67,7 +87,7 @@ export async function POST(request) {
       );
     }
     return NextResponse.json(
-      { error: `Invalid password. ${remainingBeforeLock} attempt(s) left before lockout.`, remainingBeforeLock },
+      { error: `Invalid email or password. ${remainingBeforeLock} attempt(s) left before lockout.`, remainingBeforeLock },
       { status: 401 }
     );
   } catch (error) {

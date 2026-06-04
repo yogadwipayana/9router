@@ -34,6 +34,12 @@ const PUBLIC_API_PATHS = [
 
 // Public top-level prefixes (LLM API endpoints with their own API key auth).
 const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta"];
+const PUBLIC_ADMIN_PREFIXES = ["/v1/admin", "/api/v1/admin"];
+const PUBLIC_API_CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "*",
+};
 
 // Always require JWT token regardless of requireLogin setting
 const ALWAYS_PROTECTED = [
@@ -105,6 +111,10 @@ function isPublicLlmApi(pathname) {
   return PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
+function isExternalAdminApi(pathname) {
+  return PUBLIC_ADMIN_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+}
+
 function extractApiKey(request) {
   const authHeader = request.headers.get("Authorization");
   if (authHeader?.startsWith("Bearer ")) return authHeader.slice(7);
@@ -165,6 +175,7 @@ function isPublicApi(pathname) {
 export const __test__ = {
   isLocalRequest,
   isPublicLlmApi,
+  isExternalAdminApi,
   extractApiKey,
   canAccessPublicLlmApi,
   canAccessLocalOnlyRoute,
@@ -187,10 +198,20 @@ export async function proxy(request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  if (isExternalAdminApi(pathname)) {
+    return NextResponse.next();
+  }
+
   if (isPublicLlmApi(pathname)) {
+    if (request.method === "OPTIONS") {
+      return new NextResponse(null, { status: 204, headers: PUBLIC_API_CORS_HEADERS });
+    }
     const apiKeyState = await getApiKeyAccessForRequest(request);
     if (apiKeyState.valid) return NextResponse.next();
-    return NextResponse.json({ error: getApiKeyAccessError(apiKeyState) }, { status: getApiKeyAccessStatus(apiKeyState) });
+    return NextResponse.json(
+      { error: getApiKeyAccessError(apiKeyState) },
+      { status: getApiKeyAccessStatus(apiKeyState), headers: PUBLIC_API_CORS_HEADERS }
+    );
   }
 
   // Deny-by-default for /api/* — public allow-list bypasses, everything else requires auth.

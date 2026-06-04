@@ -206,7 +206,7 @@ function importLegacyUsage(adapter, data) {
 function importLegacyDisabled(adapter, data) {
   if (!data || typeof data.disabled !== "object") return;
   for (const [provider, ids] of Object.entries(data.disabled)) {
-    adapter.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('disabledModels', ?, ?)`, [provider, stringifyJson(ids || [])]);
+    adapter.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('enabledModels', ?, ?)`, [provider, stringifyJson(ids || [])]);
   }
 }
 

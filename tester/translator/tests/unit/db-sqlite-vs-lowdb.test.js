@@ -220,13 +220,20 @@ describe("DB SQLite layer — public API parity", () => {
     expect(all.cursor).toEqual({ "gpt-5": "claude-3" });
   });
 
-  it("disabledModels: add/remove per provider", async () => {
-    await sqliteDb.disableModels("openai", ["gpt-3", "gpt-4"]);
-    expect(await sqliteDb.getDisabledByProvider("openai")).toEqual(expect.arrayContaining(["gpt-3", "gpt-4"]));
-    await sqliteDb.enableModels("openai", ["gpt-3"]);
-    expect(await sqliteDb.getDisabledByProvider("openai")).toEqual(["gpt-4"]);
-    await sqliteDb.enableModels("openai", []);
-    expect(await sqliteDb.getDisabledByProvider("openai")).toEqual([]);
+  it("enabledModels: add/remove per provider", async () => {
+    await sqliteDb.enableModels("openai", ["gpt-3", "gpt-4"]);
+    expect(await sqliteDb.getEnabledByProvider("openai")).toEqual(expect.arrayContaining(["gpt-3", "gpt-4"]));
+    await sqliteDb.disableModels("openai", ["gpt-3"]);
+    expect(await sqliteDb.getEnabledByProvider("openai")).toEqual(["gpt-4"]);
+    await sqliteDb.disableModels("openai", []);
+    expect(await sqliteDb.getEnabledByProvider("openai")).toEqual([]);
+  });
+
+  it("enabledProviders: add/remove provider", async () => {
+    await sqliteDb.enableProvider("openai");
+    expect(await sqliteDb.getEnabledProviders()).toMatchObject({ openai: true });
+    await sqliteDb.disableProvider("openai");
+    expect((await sqliteDb.getEnabledProviders()).openai).toBeUndefined();
   });
 
   it("usage: saveRequestUsage + getUsageHistory + getUsageStats", async () => {

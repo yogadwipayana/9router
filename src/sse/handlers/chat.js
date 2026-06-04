@@ -10,7 +10,7 @@ import {
 import { cacheClaudeHeaders } from "open-sse/utils/claudeHeaderCache.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels, parseModel } from "../services/model.js";
-import { getDisabledByProvider, getDisabledProviders, isProviderDisabled } from "@/lib/disabledModelsDb";
+import { getEnabledByProvider, getEnabledProviders, isProviderEnabled } from "@/lib/disabledModelsDb";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { handleComboChat } from "open-sse/services/combo.js";
@@ -114,20 +114,20 @@ export async function handleChat(request, clientRawRequest = null) {
 async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null) {
   const modelInfo = await getModelInfo(modelStr);
 
-  // Enforce disabled models / providers set via the dashboard
+  // Enforce per-provider enabled allowlist set via the dashboard
   const parsed = parseModel(modelStr);
   const providerAlias = parsed?.providerAlias;
   if (providerAlias) {
-    const [disabledModels, disabledProviders] = await Promise.all([
-      getDisabledByProvider(providerAlias),
-      getDisabledProviders(),
+    const [enabledModels, enabledProviders] = await Promise.all([
+      getEnabledByProvider(providerAlias),
+      getEnabledProviders(),
     ]);
-    if (isProviderDisabled(disabledProviders, providerAlias)) {
-      log.warn("CHAT", `Provider "${providerAlias}" is disabled`);
+    if (!isProviderEnabled(enabledProviders, providerAlias)) {
+      log.warn("CHAT", `Provider "${providerAlias}" is not enabled`);
       return errorResponse(HTTP_STATUS.NOT_FOUND, `The model '${modelStr}' does not exist`);
     }
-    if (disabledModels.includes(modelInfo.model)) {
-      log.warn("CHAT", `Model "${modelStr}" is disabled`);
+    if (!enabledModels.includes(modelInfo.model)) {
+      log.warn("CHAT", `Model "${modelStr}" is not enabled`);
       return errorResponse(HTTP_STATUS.NOT_FOUND, `The model '${modelStr}' does not exist`);
     }
   }

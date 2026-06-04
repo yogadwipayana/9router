@@ -10,7 +10,7 @@ import {
   OAUTH_PROVIDERS,
 } from "@/shared/constants/providers";
 import { getProviderConnections, getCombos, getCustomModels, getModelAliases, getProviderNodes } from "@/lib/localDb";
-import { getDisabledModels, getDisabledProviders, isProviderDisabled } from "@/lib/disabledModelsDb";
+import { getEnabledModels, getEnabledProviders, isProviderEnabled } from "@/lib/disabledModelsDb";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { resolveQoderModels } from "open-sse/services/qoderModels.js";
 
@@ -131,8 +131,8 @@ function inferKindFromUnknownModelId(modelId) {
   return LLM_KIND;
 }
 
-function isModelDisabled(disabledByAlias, alias, modelId) {
-  return Array.isArray(disabledByAlias?.[alias]) && disabledByAlias[alias].includes(modelId);
+function isModelEnabled(enabledByAlias, alias, modelId) {
+  return Array.isArray(enabledByAlias?.[alias]) && enabledByAlias[alias].includes(modelId);
 }
 
 function addNoAuthConnections(connections) {
@@ -261,19 +261,19 @@ export async function buildModelsList(kindFilter) {
     console.log("Could not fetch model aliases");
   }
 
-  let disabledByAlias = {};
+  let enabledByAlias = {};
   try {
-    disabledByAlias = await getDisabledModels();
+    enabledByAlias = await getEnabledModels();
   } catch (e) {
-    console.log("Could not fetch disabled models");
+    console.log("Could not fetch enabled models");
   }
-  const isDisabled = (alias, modelId) => isModelDisabled(disabledByAlias, alias, modelId);
+  const isEnabled = (alias, modelId) => isModelEnabled(enabledByAlias, alias, modelId);
 
-  let disabledProviders = {};
+  let enabledProviders = {};
   try {
-    disabledProviders = await getDisabledProviders();
+    enabledProviders = await getEnabledProviders();
   } catch (e) {
-    console.log("Could not fetch disabled providers");
+    console.log("Could not fetch enabled providers");
   }
 
   const activeConnectionByProvider = new Map();
@@ -321,10 +321,10 @@ export async function buildModelsList(kindFilter) {
     for (const [alias, providerModels] of Object.entries(PROVIDER_MODELS)) {
       const providerId = aliasToProviderId[alias] || alias;
       if (!providerMatchesKinds(providerId, kindFilter)) continue;
-      if (isProviderDisabled(disabledProviders, alias, providerId)) continue;
+      if (!isProviderEnabled(enabledProviders, alias, providerId)) continue;
       for (const model of providerModels) {
         if (!kindFilter.includes(modelKind(model))) continue;
-        if (isDisabled(alias, model.id)) continue;
+        if (!isEnabled(alias, model.id)) continue;
         models.push({
           id: `${alias}/${model.id}`,
           object: "model",
@@ -361,7 +361,7 @@ export async function buildModelsList(kindFilter) {
       ).trim();
       const providerModels = PROVIDER_MODELS[staticAlias] || [];
       const providerInfo = AI_PROVIDERS[providerId] || {};
-      if (isProviderDisabled(disabledProviders, outputAlias, staticAlias, providerId)) continue;
+      if (!isProviderEnabled(enabledProviders, outputAlias, staticAlias, providerId)) continue;
       const enabledModels = conn?.providerSpecificData?.enabledModels;
       const hasExplicitEnabledModels =
         Array.isArray(enabledModels) && enabledModels.length > 0;
@@ -593,18 +593,18 @@ export async function buildModelManagementCatalog() {
     console.log("Could not fetch model aliases");
   }
 
-  let disabledByAlias = {};
+  let enabledByAlias = {};
   try {
-    disabledByAlias = await getDisabledModels();
+    enabledByAlias = await getEnabledModels();
   } catch (error) {
-    console.log("Could not fetch disabled models");
+    console.log("Could not fetch enabled models");
   }
 
-  let disabledProviders = {};
+  let enabledProviders = {};
   try {
-    disabledProviders = await getDisabledProviders();
+    enabledProviders = await getEnabledProviders();
   } catch (error) {
-    console.log("Could not fetch disabled providers");
+    console.log("Could not fetch enabled providers");
   }
 
   const providers = [];
@@ -626,7 +626,7 @@ export async function buildModelManagementCatalog() {
     seenAliases.add(outputAlias);
     const providerModels = PROVIDER_MODELS[staticAlias] || [];
     const providerInfo = AI_PROVIDERS[providerId] || {};
-    const providerDisabled = isProviderDisabled(disabledProviders, outputAlias, staticAlias, providerId);
+    const providerDisabled = !isProviderEnabled(enabledProviders, outputAlias, staticAlias, providerId);
     const enabledModels = conn?.providerSpecificData?.enabledModels;
     const hasExplicitEnabledModels = Array.isArray(enabledModels) && enabledModels.length > 0;
     const isCompatibleProvider =
@@ -705,10 +705,11 @@ export async function buildModelManagementCatalog() {
     const addModel = ({ id, name, type = LLM_KIND, source = "provider" }) => {
       const modelId = normalizeModelId(id);
       if (!modelId || byId.has(modelId)) return;
-      const disabled =
-        isModelDisabled(disabledByAlias, outputAlias, modelId) ||
-        isModelDisabled(disabledByAlias, staticAlias, modelId) ||
-        isModelDisabled(disabledByAlias, providerId, modelId);
+      const disabled = !(
+        isModelEnabled(enabledByAlias, outputAlias, modelId) ||
+        isModelEnabled(enabledByAlias, staticAlias, modelId) ||
+        isModelEnabled(enabledByAlias, providerId, modelId)
+      );
       byId.set(modelId, {
         id: modelId,
         clientId: `${outputAlias}/${modelId}`,
@@ -780,8 +781,8 @@ export async function buildModelManagementCatalog() {
 
   return {
     providers,
-    disabled: disabledByAlias,
-    disabledProviders,
+    enabled: enabledByAlias,
+    enabledProviders,
     totals: {
       providers: providers.length,
       models: providers.reduce((sum, group) => sum + group.models.length, 0),

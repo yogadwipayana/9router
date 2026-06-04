@@ -33,6 +33,23 @@ function normalizeIntFlag(value) {
   return value === false || value === 0 ? 0 : 1;
 }
 
+function parseJson(value, fallback) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function getKvRows(db, scope) {
+  try {
+    return db.prepare(`SELECT key, value FROM kv WHERE scope = ?`).all(scope);
+  } catch (error) {
+    if (/no such table/i.test(error.message)) return [];
+    throw error;
+  }
+}
+
 async function main() {
   if (!process.env.DATABASE_URL) {
     throw new Error("DATABASE_URL is required. Set it in .env before running this script.");
@@ -53,7 +70,8 @@ async function main() {
     ownerUsers: 0,
     usageHistory: 0,
     usageDaily: 0,
-    requestDetails: 0,
+    enabledModels: 0,
+    enabledProviders: 0,
   };
 
   try {
@@ -146,28 +164,37 @@ async function main() {
       counts.usageDaily++;
     }
 
-    for (const row of getRows(sqlite, "requestDetails")) {
-      await prisma.requestDetail.upsert({
-        where: { id: row.id },
-        create: {
-          id: row.id,
-          timestamp: row.timestamp,
-          provider: row.provider || null,
-          model: row.model || null,
-          connectionId: row.connectionId || null,
-          status: row.status || null,
-          data: row.data,
-        },
-        update: {
-          timestamp: row.timestamp,
-          provider: row.provider || null,
-          model: row.model || null,
-          connectionId: row.connectionId || null,
-          status: row.status || null,
-          data: row.data,
-        },
+    const now = new Date().toISOString();
+
+    for (const row of getKvRows(sqlite, "enabledModels")) {
+      const models = parseJson(row.value, []);
+      if (!Array.isArray(models)) continue;
+
+      const data = [...new Set(models)]
+        .filter((modelId) => typeof modelId === "string" && modelId.trim() !== "")
+        .map((modelId) => ({
+          providerAlias: row.key,
+          modelId: modelId.trim(),
+          createdAt: now,
+        }));
+
+      if (data.length === 0) continue;
+      const result = await prisma.enabledModel.createMany({
+        data,
+        skipDuplicates: true,
       });
-      counts.requestDetails++;
+      counts.enabledModels += result.count;
+    }
+
+    const enabledProviders = getKvRows(sqlite, "enabledProviders")
+      .filter((row) => parseJson(row.value, true) !== false)
+      .map((row) => ({ providerAlias: row.key, createdAt: now }));
+    if (enabledProviders.length > 0) {
+      const result = await prisma.enabledProvider.createMany({
+        data: enabledProviders,
+        skipDuplicates: true,
+      });
+      counts.enabledProviders += result.count;
     }
 
     if (counts.usageHistory > 0) {

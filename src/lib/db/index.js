@@ -56,11 +56,11 @@ export {
   getPricing, getPricingForModel, updatePricing, resetPricing, resetAllPricing,
 } from "./repos/pricingRepo.js";
 
-// Disabled models
+// Enabled models / providers
 export {
-  getDisabledModels, getDisabledByProvider, disableModels, enableModels,
-  getDisabledProviders, disableProvider, enableProvider, isProviderDisabled,
-} from "./repos/disabledModelsRepo.js";
+  getEnabledModels, getEnabledByProvider, enableModels, disableModels,
+  getEnabledProviders, enableProvider, disableProvider, isProviderEnabled,
+} from "./repos/enabledModelsRepo.js";
 
 // Usage
 export {
@@ -77,10 +77,11 @@ export {
 // Export/import full DB
 export async function exportDb() {
   const db = await getAdapter();
-  const [{ exportSettings }, { getApiKeys }, { getOwnerUsers }] = await Promise.all([
+  const [{ exportSettings }, { getApiKeys }, { getOwnerUsers }, { getEnabledModels, getEnabledProviders }] = await Promise.all([
     import("./repos/settingsRepo.js"),
     import("./repos/apiKeysRepo.js"),
     import("./repos/ownerUsersRepo.js"),
+    import("./repos/enabledModelsRepo.js"),
   ]);
   const ownerUsers = (await getOwnerUsers())
     .filter((u) => u.configured !== false)
@@ -104,17 +105,14 @@ export async function exportDb() {
     customModels: [],
     mitmAlias: {},
     pricing: {},
-    disabledModels: {},
-    disabledProviders: {},
+    enabledModels: await getEnabledModels(),
+    enabledProviders: await getEnabledProviders(),
   };
 
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'modelAliases'`)) out.modelAliases[r.key] = parseJson(r.value);
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'customModels'`)) out.customModels.push(parseJson(r.value));
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'mitmAlias'`)) out.mitmAlias[r.key] = parseJson(r.value);
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'pricing'`)) out.pricing[r.key] = parseJson(r.value);
-  for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'disabledModels'`)) out.disabledModels[r.key] = parseJson(r.value);
-  for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'disabledProviders'`)) out.disabledProviders[r.key] = parseJson(r.value);
-
   return out;
 }
 
@@ -122,38 +120,48 @@ async function importPostgresOperationalTables(payload) {
   const { getPrisma, usePostgresOperationalData } = await import("../prisma.js");
   if (!usePostgresOperationalData()) return;
 
+  // Postgres is the source of truth for operational user data: apiKeys and
+  // ownerUsers are NEVER touched by import. Pricing also stays untouched (kv
+  // path), so cost history remains consistent with the active price book.
+  // Only enabledModels / enabledProviders are restored on demand.
+  if (payload.enabledModels === undefined && payload.enabledProviders === undefined) {
+    return;
+  }
+
   const prisma = getPrisma();
-  await prisma.$transaction(async (tx) => {
-    await tx.apiKey.deleteMany();
-    await tx.ownerUser.deleteMany();
+  const now = new Date().toISOString();
 
-    for (const k of payload.apiKeys || []) {
-      await tx.apiKey.create({
-        data: {
-          id: k.id,
-          key: k.key,
-          name: k.name || null,
-          owner: k.owner || null,
-          machineId: k.machineId || null,
-          isActive: k.isActive === false ? 0 : 1,
-          createdAt: k.createdAt || new Date().toISOString(),
-        },
-      });
+  const enabledModelRows = [];
+  for (const [providerAlias, models] of Object.entries(payload.enabledModels || {})) {
+    if (!providerAlias || !Array.isArray(models)) continue;
+    for (const modelId of models) {
+      if (typeof modelId !== "string" || !modelId.trim()) continue;
+      enabledModelRows.push({ providerAlias, modelId: modelId.trim(), createdAt: now });
     }
+  }
 
-    for (const u of payload.ownerUsers || []) {
-      const now = new Date().toISOString();
-      await tx.ownerUser.create({
-        data: {
-          email: u.email,
-          budgetUsd: Number(u.budgetUsd || 0),
-          isActive: u.isActive === false ? 0 : 1,
-          createdAt: u.createdAt || now,
-          updatedAt: u.updatedAt || now,
-        },
-      });
-    }
-  });
+  const enabledProviderRows = Object.entries(payload.enabledProviders || {})
+    .filter(([providerAlias, enabled]) => providerAlias && enabled === true)
+    .map(([providerAlias]) => ({ providerAlias, createdAt: now }));
+
+  await prisma.$transaction(
+    async (tx) => {
+      if (payload.enabledModels !== undefined) {
+        await tx.enabledModel.deleteMany();
+      }
+      if (payload.enabledProviders !== undefined) {
+        await tx.enabledProvider.deleteMany();
+      }
+
+      if (payload.enabledModels !== undefined && enabledModelRows.length > 0) {
+        await tx.enabledModel.createMany({ data: enabledModelRows, skipDuplicates: true });
+      }
+      if (payload.enabledProviders !== undefined && enabledProviderRows.length > 0) {
+        await tx.enabledProvider.createMany({ data: enabledProviderRows, skipDuplicates: true });
+      }
+    },
+    { maxWait: 30_000, timeout: 120_000 }
+  );
 }
 
 export async function importDb(payload) {
@@ -165,84 +173,95 @@ export async function importDb(payload) {
   const usePostgres = usePostgresOperationalData();
 
   db.transaction(() => {
-    // Wipe all tables (keep _meta)
-    db.run(`DELETE FROM settings`);
-    db.run(`DELETE FROM providerConnections`);
-    db.run(`DELETE FROM providerNodes`);
-    db.run(`DELETE FROM proxyPools`);
-    if (!usePostgres) {
-      db.run(`DELETE FROM apiKeys`);
-      db.run(`DELETE FROM ownerUsers`);
+    // Wipe tables only when payload includes the corresponding field, so old
+    // backups missing newer fields don't silently erase live operational data.
+    if (payload.settings !== undefined) db.run(`DELETE FROM settings`);
+    if (payload.providerConnections !== undefined) db.run(`DELETE FROM providerConnections`);
+    if (payload.providerNodes !== undefined) db.run(`DELETE FROM providerNodes`);
+    if (payload.proxyPools !== undefined) db.run(`DELETE FROM proxyPools`);
+    if (payload.combos !== undefined) db.run(`DELETE FROM combos`);
+    // Note: apiKeys, ownerUsers, and pricing are intentionally NEVER touched by
+    // import. Postgres is the source of truth for operational user data; backups
+    // are for settings/providers/models only. Pricing is preserved so usage cost
+    // history remains consistent with the active price book.
+    const kvScopes = [];
+    if (payload.modelAliases !== undefined) kvScopes.push("'modelAliases'");
+    if (payload.customModels !== undefined) kvScopes.push("'customModels'");
+    if (payload.mitmAlias !== undefined) kvScopes.push("'mitmAlias'");
+    if (payload.enabledModels !== undefined) kvScopes.push("'enabledModels'");
+    if (payload.enabledProviders !== undefined) kvScopes.push("'enabledProviders'");
+    if (kvScopes.length > 0) {
+      db.run(`DELETE FROM kv WHERE scope IN (${kvScopes.join(", ")})`);
     }
-    db.run(`DELETE FROM combos`);
-    db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing', 'disabledModels', 'disabledProviders')`);
 
     // Settings
     if (payload.settings) {
       db.run(`INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, [stringifyJson(payload.settings)]);
     }
 
-    for (const c of payload.providerConnections || []) {
-      const { id, provider, authType, name, email, priority, isActive, createdAt, updatedAt, ...rest } = c;
-      db.run(
-        `INSERT OR REPLACE INTO providerConnections(id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, provider, authType || "oauth", name || null, email || null, priority || null, isActive === false ? 0 : 1, stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
-      );
+    if (payload.providerConnections !== undefined) {
+      for (const c of payload.providerConnections || []) {
+        const { id, provider, authType, name, email, priority, isActive, createdAt, updatedAt, ...rest } = c;
+        db.run(
+          `INSERT OR REPLACE INTO providerConnections(id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [id, provider, authType || "oauth", name || null, email || null, priority || null, isActive === false ? 0 : 1, stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
+        );
+      }
     }
-    for (const n of payload.providerNodes || []) {
-      const { id, type, name, createdAt, updatedAt, ...rest } = n;
-      db.run(
-        `INSERT OR REPLACE INTO providerNodes(id, type, name, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
-        [id, type || null, name || null, stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
-      );
+    if (payload.providerNodes !== undefined) {
+      for (const n of payload.providerNodes || []) {
+        const { id, type, name, createdAt, updatedAt, ...rest } = n;
+        db.run(
+          `INSERT OR REPLACE INTO providerNodes(id, type, name, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
+          [id, type || null, name || null, stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
+        );
+      }
     }
-    for (const p of payload.proxyPools || []) {
-      const { id, isActive, testStatus, createdAt, updatedAt, ...rest } = p;
-      db.run(
-        `INSERT OR REPLACE INTO proxyPools(id, isActive, testStatus, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
-        [id, isActive === false ? 0 : 1, testStatus || "unknown", stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
-      );
+    if (payload.proxyPools !== undefined) {
+      for (const p of payload.proxyPools || []) {
+        const { id, isActive, testStatus, createdAt, updatedAt, ...rest } = p;
+        db.run(
+          `INSERT OR REPLACE INTO proxyPools(id, isActive, testStatus, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
+          [id, isActive === false ? 0 : 1, testStatus || "unknown", stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
+        );
+      }
+    }
+    if (payload.combos !== undefined) {
+      for (const c of payload.combos || []) {
+        db.run(
+          `INSERT OR REPLACE INTO combos(id, name, kind, models, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
+          [c.id, c.name, c.kind || null, stringifyJson(c.models || []), c.createdAt || new Date().toISOString(), c.updatedAt || new Date().toISOString()]
+        );
+      }
+    }
+    if (payload.modelAliases !== undefined) {
+      for (const [a, m] of Object.entries(payload.modelAliases || {})) {
+        db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('modelAliases', ?, ?)`, [a, stringifyJson(m)]);
+      }
+    }
+    if (payload.customModels !== undefined) {
+      for (const m of payload.customModels || []) {
+        const k = `${m.providerAlias}|${m.id}|${m.type || "llm"}`;
+        db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('customModels', ?, ?)`, [k, stringifyJson(m)]);
+      }
+    }
+    if (payload.mitmAlias !== undefined) {
+      for (const [tool, mappings] of Object.entries(payload.mitmAlias || {})) {
+        db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('mitmAlias', ?, ?)`, [tool, stringifyJson(mappings || {})]);
+      }
     }
     if (!usePostgres) {
-      for (const k of payload.apiKeys || []) {
-        db.run(
-          `INSERT OR REPLACE INTO apiKeys(id, key, name, owner, machineId, isActive, createdAt) VALUES(?, ?, ?, ?, ?, ?, ?)`,
-          [k.id, k.key, k.name || null, k.owner || null, k.machineId || null, k.isActive === false ? 0 : 1, k.createdAt || new Date().toISOString()]
-        );
+      if (payload.enabledModels !== undefined) {
+        for (const [provider, models] of Object.entries(payload.enabledModels || {})) {
+          db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('enabledModels', ?, ?)`, [provider, stringifyJson(models || [])]);
+        }
       }
-      for (const u of payload.ownerUsers || []) {
-        const now = new Date().toISOString();
-        db.run(
-          `INSERT OR REPLACE INTO ownerUsers(email, budgetUsd, isActive, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?)`,
-          [u.email, Number(u.budgetUsd || 0), u.isActive === false ? 0 : 1, u.createdAt || now, u.updatedAt || now]
-        );
-      }
-    }
-    for (const c of payload.combos || []) {
-      db.run(
-        `INSERT OR REPLACE INTO combos(id, name, kind, models, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
-        [c.id, c.name, c.kind || null, stringifyJson(c.models || []), c.createdAt || new Date().toISOString(), c.updatedAt || new Date().toISOString()]
-      );
-    }
-    for (const [a, m] of Object.entries(payload.modelAliases || {})) {
-      db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('modelAliases', ?, ?)`, [a, stringifyJson(m)]);
-    }
-    for (const m of payload.customModels || []) {
-      const k = `${m.providerAlias}|${m.id}|${m.type || "llm"}`;
-      db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('customModels', ?, ?)`, [k, stringifyJson(m)]);
-    }
-    for (const [tool, mappings] of Object.entries(payload.mitmAlias || {})) {
-      db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('mitmAlias', ?, ?)`, [tool, stringifyJson(mappings || {})]);
-    }
-    for (const [provider, models] of Object.entries(payload.pricing || {})) {
-      db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('pricing', ?, ?)`, [provider, stringifyJson(models || {})]);
-    }
-    for (const [provider, models] of Object.entries(payload.disabledModels || {})) {
-      db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('disabledModels', ?, ?)`, [provider, stringifyJson(models || [])]);
-    }
-    for (const [provider, disabled] of Object.entries(payload.disabledProviders || {})) {
-      if (disabled === true) {
-        db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('disabledProviders', ?, ?)`, [provider, stringifyJson(true)]);
+      if (payload.enabledProviders !== undefined) {
+        for (const [provider, enabled] of Object.entries(payload.enabledProviders || {})) {
+          if (enabled === true) {
+            db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('enabledProviders', ?, ?)`, [provider, stringifyJson(true)]);
+          }
+        }
       }
     }
   });

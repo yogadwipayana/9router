@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getModelAliases, setModelAlias } from "@/models";
-import { getDisabledModels } from "@/lib/disabledModelsDb";
+import { getEnabledModels } from "@/lib/disabledModelsDb";
 import { AI_MODELS } from "@/shared/constants/config";
 import { getProviderAlias } from "@/shared/constants/providers";
 import { buildModelManagementCatalog } from "@/app/api/v1/models/route.js";
@@ -15,13 +15,13 @@ export async function GET(request) {
     }
 
     const modelAliases = await getModelAliases();
-    const disabled = await getDisabledModels();
+    const enabled = await getEnabledModels();
 
     const models = AI_MODELS
       .filter((m) => {
         const alias = getProviderAlias(m.provider) || m.provider;
-        const list = disabled[alias] || disabled[m.provider] || [];
-        return !list.includes(m.model);
+        const list = enabled[alias] || enabled[m.provider] || [];
+        return list.includes(m.model);
       })
       .map((m) => {
         const fullModel = `${m.provider}/${m.model}`;

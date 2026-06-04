@@ -404,37 +404,53 @@ export async function saveRequestUsage(entry) {
 
     if (usePostgresOperationalData()) {
       const prisma = getPrisma();
-      await prisma.$transaction(async (tx) => {
-        await tx.usageHistory.create({
-          data: {
-            timestamp: entry.timestamp,
-            provider: entry.provider || null,
-            model: entry.model || null,
-            connectionId: entry.connectionId || null,
-            apiKey: entry.apiKey || null,
-            endpoint: entry.endpoint || null,
-            promptTokens,
-            completionTokens,
-            cost: entry.cost || 0,
-            status: entry.status || "ok",
-            tokens: stringifyJson(tokens),
-            meta: stringifyJson({}),
-          },
-        });
 
-        const dateKey = getLocalDateKey(entry.timestamp);
-        const row = await tx.usageDaily.findUnique({ where: { dateKey } });
-        const day = row ? parseJson(row.data, {}) : createEmptyDay();
-        aggregateEntryToDay(day, entry);
-        await tx.usageDaily.upsert({
-          where: { dateKey },
-          create: { dateKey, data: stringifyJson(day) },
-          update: { data: stringifyJson(day) },
-        });
+      // 1) usageHistory: single-statement insert. NO interactive transaction →
+      //    immune to P2028 ("Unable to start a transaction in the given time")
+      //    that previously rolled back history together with the daily upsert.
+      //    History is the source of truth; usageDaily can be rebuilt from it.
+      await prisma.usageHistory.create({
+        data: {
+          timestamp: entry.timestamp,
+          provider: entry.provider || null,
+          model: entry.model || null,
+          connectionId: entry.connectionId || null,
+          apiKey: entry.apiKey || null,
+          endpoint: entry.endpoint || null,
+          promptTokens,
+          completionTokens,
+          cost: entry.cost || 0,
+          status: entry.status || "ok",
+          tokens: stringifyJson(tokens),
+          meta: stringifyJson({}),
+        },
       });
 
       pushToRing(entry);
       statsEmitter.emit("update");
+
+      // 2) usageDaily: best-effort aggregate update in its own short tx with
+      //    generous maxWait so a busy pgbouncer pool doesn't blow up. If it
+      //    still fails, history is intact and the daily summary will catch up
+      //    on the next successful write or via rebuildPostgresUsageDailyFromHistory.
+      try {
+        const dateKey = getLocalDateKey(entry.timestamp);
+        await prisma.$transaction(
+          async (tx) => {
+            const row = await tx.usageDaily.findUnique({ where: { dateKey } });
+            const day = row ? parseJson(row.data, {}) : createEmptyDay();
+            aggregateEntryToDay(day, entry);
+            await tx.usageDaily.upsert({
+              where: { dateKey },
+              create: { dateKey, data: stringifyJson(day) },
+              update: { data: stringifyJson(day) },
+            });
+          },
+          { maxWait: 15_000, timeout: 20_000 }
+        );
+      } catch (e) {
+        console.error("Failed to update usageDaily aggregate (history saved OK):", e?.code || e?.message || e);
+      }
       return;
     }
 
