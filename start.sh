@@ -1,4 +1,10 @@
-docker stop 9router
-docker rm 9router
-docker build -t 9router .
-docker run -d --name 9router -p 20128:20128 --env-file .env -v 9router-data:/app/data 9router
+pm2 stop 9router
+pm2 delete 9router
+
+git pull
+npm install
+npx prisma generate
+npm run build
+PORT=4000 pm2 start npm --name "9router" -- run start
+
+pm2 save
