@@ -39,6 +39,7 @@ model UsageHistory {
   model            String?
   connectionId     String?
   apiKey           String?
+  owner            String?
   endpoint         String?
   promptTokens     Int?    @default(0)
   completionTokens Int?    @default(0)
@@ -51,6 +52,7 @@ model UsageHistory {
   @@index([provider], map: "idx_uh_provider")
   @@index([model], map: "idx_uh_model")
   @@index([connectionId], map: "idx_uh_conn")
+  @@index([owner], map: "idx_uh_owner")
   @@map("usageHistory")
 }
 
@@ -76,4 +78,19 @@ model EnabledProvider {
   createdAt     String
 
   @@map("enabledProviders")
+}
+
+model Pricing {
+  providerAlias String
+  modelId       String
+  input         Float?
+  output        Float?
+  cached        Float?
+  reasoning     Float?
+  cacheCreation Float? @map("cache_creation")
+  updatedAt     String
+
+  @@id([providerAlias, modelId])
+  @@index([providerAlias], map: "idx_pricing_provider")
+  @@map("pricing")
 }

@@ -1,6 +1,7 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { makeKv } from "../helpers/kvStore.js";
+import { getPrisma, usePostgresOperationalData } from "../../prisma.js";
 
 const pricingKv = makeKv("pricing");
 const CACHE_TTL_MS = 5000;
@@ -11,7 +12,48 @@ function invalidate() {
   cache = { value: null, expiresAt: 0 };
 }
 
+const FIELD_MAP_TO_DB = {
+  input: "input",
+  output: "output",
+  cached: "cached",
+  reasoning: "reasoning",
+  cache_creation: "cacheCreation",
+};
+
+const FIELD_MAP_FROM_DB = {
+  input: "input",
+  output: "output",
+  cached: "cached",
+  reasoning: "reasoning",
+  cacheCreation: "cache_creation",
+};
+
+function rowToPricing(row) {
+  const out = {};
+  for (const [dbKey, jsKey] of Object.entries(FIELD_MAP_FROM_DB)) {
+    if (row[dbKey] !== null && row[dbKey] !== undefined) out[jsKey] = row[dbKey];
+  }
+  return out;
+}
+
+function pricingToRowData(pricing) {
+  const out = {};
+  for (const [jsKey, dbKey] of Object.entries(FIELD_MAP_TO_DB)) {
+    if (pricing[jsKey] !== undefined) out[dbKey] = pricing[jsKey];
+  }
+  return out;
+}
+
 async function getUserPricing() {
+  if (usePostgresOperationalData()) {
+    const rows = await getPrisma().pricing.findMany();
+    const out = {};
+    for (const row of rows) {
+      if (!out[row.providerAlias]) out[row.providerAlias] = {};
+      out[row.providerAlias][row.modelId] = rowToPricing(row);
+    }
+    return out;
+  }
   return await pricingKv.getAll();
 }
 
@@ -69,8 +111,27 @@ export async function getPricingForModel(provider, model) {
   return resolveConst(provider, model);
 }
 
-// Atomic merge inside transaction (per-provider read-modify-write)
+// Atomic merge — per-(provider, model) read-modify-write
 export async function updatePricing(pricingData) {
+  if (usePostgresOperationalData()) {
+    const prisma = getPrisma();
+    const now = new Date().toISOString();
+    const ops = [];
+    for (const [provider, models] of Object.entries(pricingData)) {
+      for (const [modelId, pricing] of Object.entries(models)) {
+        const data = pricingToRowData(pricing);
+        ops.push(prisma.pricing.upsert({
+          where: { providerAlias_modelId: { providerAlias: provider, modelId } },
+          create: { providerAlias: provider, modelId, ...data, updatedAt: now },
+          update: { ...data, updatedAt: now },
+        }));
+      }
+    }
+    if (ops.length > 0) await prisma.$transaction(ops);
+    invalidate();
+    return await getUserPricing();
+  }
+
   const db = await getAdapter();
   db.transaction(() => {
     for (const [provider, models] of Object.entries(pricingData)) {
@@ -92,6 +153,18 @@ export async function updatePricing(pricingData) {
 
 export async function resetPricing(provider, model) {
   if (!provider) return await getUserPricing();
+
+  if (usePostgresOperationalData()) {
+    const prisma = getPrisma();
+    if (model) {
+      await prisma.pricing.deleteMany({ where: { providerAlias: provider, modelId: model } });
+    } else {
+      await prisma.pricing.deleteMany({ where: { providerAlias: provider } });
+    }
+    invalidate();
+    return await getUserPricing();
+  }
+
   const db = await getAdapter();
   db.transaction(() => {
     if (!model) {
@@ -115,6 +188,11 @@ export async function resetPricing(provider, model) {
 }
 
 export async function resetAllPricing() {
+  if (usePostgresOperationalData()) {
+    await getPrisma().pricing.deleteMany({});
+    invalidate();
+    return {};
+  }
   await pricingKv.clear();
   invalidate();
   return {};

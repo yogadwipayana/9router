@@ -71,12 +71,16 @@ function getKeyStats(db) {
 }
 
 function getUsageStats(db) {
+  // Aggregate by usageHistory.owner so spend totals survive after an ApiKey
+  // is deleted. Older history written before the owner column existed is
+  // backfilled by the migration; rows for keys that were already deleted by
+  // then will have owner = NULL and stay excluded — there's no source of
+  // truth left to recover them from.
   const rows = db.all(`
-    SELECT lower(k.owner) AS email, COUNT(h.id) AS requestCount, COALESCE(SUM(h.cost), 0) AS spentUsd
-    FROM usageHistory h
-    JOIN apiKeys k ON h.apiKey = k.key
-    WHERE k.owner IS NOT NULL AND trim(k.owner) != ''
-    GROUP BY lower(k.owner)
+    SELECT lower(owner) AS email, COUNT(id) AS requestCount, COALESCE(SUM(cost), 0) AS spentUsd
+    FROM usageHistory
+    WHERE owner IS NOT NULL AND trim(owner) != ''
+    GROUP BY lower(owner)
   `);
   return Object.fromEntries(rows.map((row) => [row.email, row]));
 }
@@ -93,11 +97,10 @@ export async function getOwnerUsers() {
       GROUP BY lower("owner")
     `;
     const usageStatsRows = await prisma.$queryRaw`
-      SELECT lower(k."owner") AS email, COUNT(h."id")::int AS "requestCount", COALESCE(SUM(h."cost"), 0)::float8 AS "spentUsd"
-      FROM "usageHistory" h
-      JOIN "apiKeys" k ON h."apiKey" = k."key"
-      WHERE k."owner" IS NOT NULL AND btrim(k."owner") != ''
-      GROUP BY lower(k."owner")
+      SELECT lower("owner") AS email, COUNT("id")::int AS "requestCount", COALESCE(SUM("cost"), 0)::float8 AS "spentUsd"
+      FROM "usageHistory"
+      WHERE "owner" IS NOT NULL AND btrim("owner") != ''
+      GROUP BY lower("owner")
     `;
     const keyStats = Object.fromEntries(keyStatsRows.map((row) => [row.email, row]));
     const usageStats = Object.fromEntries(usageStatsRows.map((row) => [row.email, row]));
@@ -241,10 +244,9 @@ export async function getOwnerBudgetState(email) {
     const prisma = getPrisma();
     const row = await prisma.ownerUser.findUnique({ where: { email: normalized } });
     const usageRows = await prisma.$queryRaw`
-      SELECT COUNT(h."id")::int AS "requestCount", COALESCE(SUM(h."cost"), 0)::float8 AS "spentUsd"
-      FROM "usageHistory" h
-      JOIN "apiKeys" k ON h."apiKey" = k."key"
-      WHERE lower(k."owner") = ${normalized}
+      SELECT COUNT("id")::int AS "requestCount", COALESCE(SUM("cost"), 0)::float8 AS "spentUsd"
+      FROM "usageHistory"
+      WHERE lower("owner") = ${normalized}
     `;
     return mergeOwnerStats(row, null, { email: normalized, ...(usageRows[0] || {}) });
   }
@@ -252,10 +254,9 @@ export async function getOwnerBudgetState(email) {
   const db = await getAdapter();
   const row = db.get(`SELECT * FROM ownerUsers WHERE email = ?`, [normalized]);
   const usage = db.get(`
-    SELECT COUNT(h.id) AS requestCount, COALESCE(SUM(h.cost), 0) AS spentUsd
-    FROM usageHistory h
-    JOIN apiKeys k ON h.apiKey = k.key
-    WHERE lower(k.owner) = ?
+    SELECT COUNT(id) AS requestCount, COALESCE(SUM(cost), 0) AS spentUsd
+    FROM usageHistory
+    WHERE lower(owner) = ?
   `, [normalized]);
 
   return mergeOwnerStats(row, null, { email: normalized, ...(usage || {}) });

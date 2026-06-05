@@ -97,15 +97,19 @@ Mengembalikan data dashboard Usage: stats, chart, recent logs, request details p
 | Name | Type | Default | Range / Enum |
 |---|---|---|---|
 | `period` | string | `7d` | `today`, `24h`, `7d`, `30d`, `60d`, `all` |
-| `page` | integer | `1` | ≥ 1 |
-| `pageSize` | integer | `20` | 1–100 |
-| `logsLimit` | integer | `200` | 0–500 (0 = skip) |
+| `page` | integer | `1` | 1–999999 (out-of-range → clamped, no error) |
+| `pageSize` | integer | `20` | 1–100 (out-of-range → clamped, no error) |
+| `logsLimit` | integer | `200` | 0–500 (0 = skip, out-of-range → clamped) |
 | `provider` | string | — | filter request details |
 | `model` | string | — | filter request details |
 | `connectionId` | string | — | filter request details |
 | `status` | string | — | filter request details |
 | `startDate` | string | — | filter request details (ISO date) |
 | `endDate` | string | — | filter request details (ISO date) |
+
+> **Catatan validasi**: angka di luar range akan **di-clamp diam-diam** (bukan 400). Hanya `period` yang invalid yang balas 400. Pass `page=0` jadi `1`, `pageSize=999` jadi `100`, dst.
+
+> **`chartPeriod`**: kalau `period=all`, chart pakai window `60d` (tidak ada chart "all"). Field `chartPeriod` di response menunjukkan window aktual yang dipakai untuk chart, bisa beda dengan `period`.
 
 **Response 200** (shape, isi tergantung database):
 
@@ -151,16 +155,30 @@ User di sini adalah **owner user** untuk routing API keys (punya budget USD).
     {
       "email": "user@example.com",
       "budgetUsd": 25,
-      "isActive": true,
       "spentUsd": 1.2345,
       "remainingUsd": 23.7655,
+      "isActive": true,
       "configured": true,
       "keyCount": 3,
-      "requestCount": 142
+      "requestCount": 142,
+      "createdAt": "2026-06-04T01:23:45.000Z",
+      "updatedAt": "2026-06-04T01:23:45.000Z"
     }
   ]
 }
 ```
+
+| Field | Type | Notes |
+|---|---|---|
+| `email` | string | Lowercased |
+| `budgetUsd` | number \| null | `null` kalau user tidak ada di tabel `ownerUsers` (muncul karena ada API key dengan owner ini) |
+| `spentUsd` | number | Sum cost dari `usageHistory` |
+| `remainingUsd` | number \| null | `max(0, budgetUsd - spentUsd)`, `null` kalau `budgetUsd` null |
+| `isActive` | boolean | |
+| `configured` | boolean | `true` kalau ada row di `ownerUsers`, `false` kalau hanya muncul dari API key/usage |
+| `keyCount` | integer | Jumlah API key milik user |
+| `requestCount` | integer | Jumlah request di window penuh |
+| `createdAt` / `updatedAt` | string \| null | ISO timestamp, `null` untuk user yang belum `configured` |
 
 **Errors**
 
@@ -197,10 +215,15 @@ Buat atau upsert user baru.
   "user": {
     "email": "user@example.com",
     "budgetUsd": 25,
-    "isActive": true
+    "isActive": true,
+    "configured": true,
+    "createdAt": "2026-06-04T01:23:45.000Z",
+    "updatedAt": "2026-06-04T01:23:45.000Z"
   }
 }
 ```
+
+> Upsert: kalau email sudah ada, row diperbarui (tetap balas `201`).
 
 **Errors**
 
@@ -226,10 +249,16 @@ Buat atau upsert user baru.
     "spentUsd": 3.21,
     "remainingUsd": 21.79,
     "isActive": true,
-    "configured": true
+    "configured": true,
+    "keyCount": 3,
+    "requestCount": 142,
+    "createdAt": "2026-06-04T01:23:45.000Z",
+    "updatedAt": "2026-06-04T01:23:45.000Z"
   }
 }
 ```
+
+Shape sama seperti item di `GET /v1/admin/users`. `404` dipicu kalau `configured === false` (user tidak ada di tabel `ownerUsers`, walau email mungkin punya API key).
 
 **Errors**
 
@@ -237,7 +266,6 @@ Buat atau upsert user baru.
 |---|---|
 | `400` | `{ "error": "Valid email is required" }` |
 | `404` | `{ "error": "User budget not found" }` |
-| `500` | `{ "error": "<message>" }` |
 
 ---
 
@@ -262,8 +290,19 @@ Update budget / status user.
 **Response 200**
 
 ```json
-{ "user": { "email": "user@example.com", "budgetUsd": 50, "isActive": true } }
+{
+  "user": {
+    "email": "user@example.com",
+    "budgetUsd": 50,
+    "isActive": true,
+    "configured": true,
+    "createdAt": "2026-06-04T01:23:45.000Z",
+    "updatedAt": "2026-06-04T01:23:45.000Z"
+  }
+}
 ```
+
+> PATCH bersifat **upsert**: kalau email belum ada, akan dibuat baru (tidak balas 404).
 
 **Errors**
 
@@ -300,8 +339,23 @@ Eksekusi action.
 
 **Response 200 — `add-budget`**
 
+Balas state user lengkap (sama seperti `GET /v1/admin/users/{email}`):
+
 ```json
-{ "user": { "email": "user@example.com", "budgetUsd": 35 } }
+{
+  "user": {
+    "email": "user@example.com",
+    "budgetUsd": 35,
+    "spentUsd": 3.21,
+    "remainingUsd": 31.79,
+    "isActive": true,
+    "configured": true,
+    "keyCount": 3,
+    "requestCount": 142,
+    "createdAt": "2026-06-04T01:23:45.000Z",
+    "updatedAt": "2026-06-04T15:00:00.000Z"
+  }
+}
 ```
 
 **Response 200 — `reset-usage`**
@@ -368,6 +422,8 @@ API key user-scoped untuk routing endpoint `/v1/chat/completions`, `/v1/messages
 }
 ```
 
+> Raw key (`key`) selalu dikembalikan **tanpa masking** di endpoint manapun (list, get, create). Anggap setiap response admin api-keys sebagai sensitif.
+
 **Errors**
 
 | Status | Body |
@@ -409,7 +465,7 @@ API key user-scoped untuk routing endpoint `/v1/chat/completions`, `/v1/messages
 }
 ```
 
-> Field `key` adalah satu-satunya kesempatan untuk membaca raw key — endpoint GET berikutnya boleh saja masking sebagian.
+> Field `key` adalah raw key. Endpoint GET di bawah juga balas raw `key` (tidak ada masking) — perlakukan semua respon admin api-keys sebagai sensitif.
 
 **Errors**
 
@@ -429,14 +485,19 @@ API key user-scoped untuk routing endpoint `/v1/chat/completions`, `/v1/messages
 ```json
 {
   "key": {
-    "id": "…",
+    "id": "uuid-or-id",
     "name": "External app key",
+    "key": "sk-…",
     "owner": "user@example.com",
+    "userEmail": "user@example.com",
+    "machineId": "<server-machine-id>",
     "isActive": true,
     "createdAt": "2026-06-04T01:23:45.000Z"
   }
 }
 ```
+
+> Sama seperti list — raw `key` di-return tanpa masking. `userEmail` adalah alias dari `owner` yang dihitung saat dibaca (bukan kolom DB tersendiri).
 
 **Errors**
 
@@ -468,8 +529,21 @@ API key user-scoped untuk routing endpoint `/v1/chat/completions`, `/v1/messages
 
 **Response 200**
 
+Shape sama seperti `GET /v1/admin/api-keys/{id}`:
+
 ```json
-{ "key": { /* updated key */ } }
+{
+  "key": {
+    "id": "uuid-or-id",
+    "name": "Updated key name",
+    "key": "sk-…",
+    "owner": "newowner@example.com",
+    "userEmail": "newowner@example.com",
+    "machineId": "<server-machine-id>",
+    "isActive": true,
+    "createdAt": "2026-06-04T01:23:45.000Z"
+  }
+}
 ```
 
 **Errors**
@@ -551,6 +625,8 @@ Set alias untuk model.
 |---|---|---|
 | `model` | string | yes (trimmed, non-empty) |
 | `alias` | string | yes (trimmed, non-empty) |
+
+> Re-setting alias yang sama untuk model yang sama (mis. `model=X, alias=Y` saat memang sudah `X→Y`) dianggap valid (no-op). Konflik hanya dilempar kalau alias sama dipakai oleh model **lain**.
 
 **Response 200**
 
@@ -647,8 +723,9 @@ Reset pricing. Scope ditentukan oleh query.
 | set | set | Reset satu model (`provider/model`) |
 | set | — | Reset seluruh provider |
 | — | — | Reset **semua** pricing |
+| — | set | Reset **semua** pricing (param `model` tanpa `provider` diabaikan) |
 
-> Tanpa query = reset full. Hati-hati.
+> Tanpa `provider` = reset full. Hati-hati. Mengirim `model` tanpa `provider` **tidak** menghasilkan error — sebagai gantinya, full reset tetap dijalankan.
 
 **Response 200**
 

@@ -213,7 +213,7 @@ async function getApiKeyMapCached() {
     const { getApiKeys } = await import("./apiKeysRepo.js");
     const all = await getApiKeys();
     const map = {};
-    for (const k of all) map[k.key] = { name: k.name, id: k.id, createdAt: k.createdAt };
+    for (const k of all) map[k.key] = { name: k.name, id: k.id, createdAt: k.createdAt, owner: k.owner || null };
     apiKeyCache.map = map;
     apiKeyCache.ts = Date.now();
   } catch {}
@@ -402,6 +402,18 @@ export async function saveRequestUsage(entry) {
     const promptTokens = tokens.prompt_tokens || tokens.input_tokens || 0;
     const completionTokens = tokens.completion_tokens || tokens.output_tokens || 0;
 
+    // Persist owner alongside apiKey so spend stays attributable after the
+    // ApiKey row is deleted. If caller didn't supply owner, resolve via the
+    // cached key map.
+    let owner = typeof entry.owner === "string" && entry.owner.trim() ? entry.owner.trim().toLowerCase() : null;
+    if (!owner && entry.apiKey) {
+      try {
+        const map = await getApiKeyMapCached();
+        const info = map[entry.apiKey];
+        if (info?.owner) owner = String(info.owner).trim().toLowerCase() || null;
+      } catch {}
+    }
+
     if (usePostgresOperationalData()) {
       const prisma = getPrisma();
 
@@ -416,6 +428,7 @@ export async function saveRequestUsage(entry) {
           model: entry.model || null,
           connectionId: entry.connectionId || null,
           apiKey: entry.apiKey || null,
+          owner,
           endpoint: entry.endpoint || null,
           promptTokens,
           completionTokens,
@@ -460,10 +473,10 @@ export async function saveRequestUsage(entry) {
     // better-sqlite3 is sync → no JS yield mid-transaction → no race in same process.
     db.transaction(() => {
       db.run(
-        `INSERT INTO usageHistory(timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO usageHistory(timestamp, provider, model, connectionId, apiKey, owner, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           entry.timestamp, entry.provider || null, entry.model || null,
-          entry.connectionId || null, entry.apiKey || null, entry.endpoint || null,
+          entry.connectionId || null, entry.apiKey || null, owner, entry.endpoint || null,
           promptTokens, completionTokens, entry.cost || 0, entry.status || "ok",
           stringifyJson(tokens), stringifyJson({}),
         ]

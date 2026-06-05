@@ -55,6 +55,51 @@ const jsonObject = {
   additionalProperties: true,
 };
 
+const ownerUserObject = {
+  type: "object",
+  properties: {
+    email: { type: "string", format: "email" },
+    budgetUsd: { type: "number", nullable: true },
+    isActive: { type: "boolean" },
+    configured: { type: "boolean" },
+    createdAt: { type: "string", nullable: true, format: "date-time" },
+    updatedAt: { type: "string", nullable: true, format: "date-time" },
+  },
+  additionalProperties: true,
+};
+
+const ownerUserStateObject = {
+  type: "object",
+  properties: {
+    email: { type: "string", format: "email" },
+    budgetUsd: { type: "number", nullable: true },
+    spentUsd: { type: "number" },
+    remainingUsd: { type: "number", nullable: true },
+    isActive: { type: "boolean" },
+    configured: { type: "boolean" },
+    keyCount: { type: "integer" },
+    requestCount: { type: "integer" },
+    createdAt: { type: "string", nullable: true, format: "date-time" },
+    updatedAt: { type: "string", nullable: true, format: "date-time" },
+  },
+  additionalProperties: true,
+};
+
+const apiKeyObject = {
+  type: "object",
+  properties: {
+    id: { type: "string" },
+    name: { type: "string" },
+    key: { type: "string", description: "Raw API key. Returned in full by every read endpoint — not masked." },
+    owner: { type: "string", format: "email", nullable: true },
+    userEmail: { type: "string", format: "email", nullable: true, description: "Alias of owner. Computed at read time." },
+    machineId: { type: "string", nullable: true },
+    isActive: { type: "boolean" },
+    createdAt: { type: "string", format: "date-time", nullable: true },
+  },
+  additionalProperties: true,
+};
+
 const authResponses = {
   401: {
     description: "Missing, invalid, or paused API key.",
@@ -118,7 +163,7 @@ export function getOpenApiSpec() {
       { name: "Chat", description: "OpenAI, Responses, Claude, and Ollama-compatible routing." },
       { name: "Media", description: "Images, text-to-speech, speech-to-text, and embeddings." },
       { name: "Web", description: "Search and web page extraction tools routed through configured providers." },
-      { name: "Admin", description: "Sidebar management APIs for usage, users, API keys, models, and pricing. Requires ADMIN_API_KEY from .env, sent as Authorization: Bearer <ADMIN_API_KEY> or x-admin-api-key." },
+      { name: "Admin", description: "Sidebar management APIs for usage, users, API keys, models, and pricing. Requires ADMIN_API_KEY from .env, sent as Authorization: Bearer <ADMIN_API_KEY> or x-admin-api-key. Every admin path also accepts an unauthenticated OPTIONS preflight (returns 204 with permissive CORS headers); preflight is intentionally not modeled per-path in this spec." },
     ],
     paths: {
       "/models": {
@@ -588,13 +633,13 @@ export function getOpenApiSpec() {
           tags: ["Admin"],
           operationId: "getAdminUsage",
           summary: "Get usage dashboard data",
-          description: "Returns usage stats, chart data, recent logs, request details, and provider filters for the Usage sidebar menu.",
+          description: "Returns usage stats, chart data, recent logs, request details, and provider filters for the Usage sidebar menu. Out-of-range integer params are silently clamped — only an invalid `period` returns 400. When `period=all`, `chartPeriod` falls back to `60d` (chart has no \"all\" window).",
           security: adminSecurity,
           parameters: [
             { name: "period", in: "query", schema: { type: "string", enum: ["today", "24h", "7d", "30d", "60d", "all"], default: "7d" } },
-            { name: "page", in: "query", schema: { type: "integer", default: 1 } },
-            { name: "pageSize", in: "query", schema: { type: "integer", default: 20, maximum: 100 } },
-            { name: "logsLimit", in: "query", schema: { type: "integer", default: 200, maximum: 500 } },
+            { name: "page", in: "query", schema: { type: "integer", default: 1, minimum: 1, maximum: 999999 } },
+            { name: "pageSize", in: "query", schema: { type: "integer", default: 20, minimum: 1, maximum: 100 } },
+            { name: "logsLimit", in: "query", schema: { type: "integer", default: 200, minimum: 0, maximum: 500 } },
             { name: "provider", in: "query", schema: { type: "string" } },
             { name: "model", in: "query", schema: { type: "string" } },
             { name: "connectionId", in: "query", schema: { type: "string" } },
@@ -603,8 +648,40 @@ export function getOpenApiSpec() {
             { name: "endDate", in: "query", schema: { type: "string" } },
           ],
           responses: {
-            200: jsonResponse("Usage dashboard data.", jsonObject),
-            400: jsonResponse("Invalid query.", errorResponse),
+            200: jsonResponse(
+              "Usage dashboard data.",
+              {
+                type: "object",
+                properties: {
+                  period: { type: "string", enum: ["today", "24h", "7d", "30d", "60d", "all"] },
+                  chartPeriod: { type: "string", enum: ["today", "24h", "7d", "30d", "60d"] },
+                  stats: jsonObject,
+                  chart: jsonObject,
+                  logs: { type: "array", items: jsonObject },
+                  requestDetails: {
+                    type: "object",
+                    properties: {
+                      details: { type: "array", items: jsonObject },
+                      total: { type: "integer" },
+                      page: { type: "integer" },
+                      pageSize: { type: "integer" },
+                    },
+                    additionalProperties: true,
+                  },
+                  providers: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        id: { type: "string" },
+                        name: { type: "string" },
+                      },
+                    },
+                  },
+                },
+              }
+            ),
+            400: jsonResponse("Invalid period (only `period` returns 400; other params are clamped).", errorResponse),
             ...authResponses,
             ...serverErrorResponse,
           },
@@ -617,7 +694,15 @@ export function getOpenApiSpec() {
           summary: "List sidebar users",
           security: adminSecurity,
           responses: {
-            200: jsonResponse("Users and budget state.", jsonObject),
+            200: jsonResponse(
+              "Users and budget state.",
+              {
+                type: "object",
+                properties: {
+                  users: { type: "array", items: ownerUserStateObject },
+                },
+              }
+            ),
             ...authResponses,
             ...serverErrorResponse,
           },
@@ -640,7 +725,13 @@ export function getOpenApiSpec() {
             { email: "user@example.com", budgetUsd: 25, isActive: true }
           ),
           responses: {
-            201: jsonResponse("Created user.", jsonObject),
+            201: jsonResponse(
+              "Created (or updated) user.",
+              {
+                type: "object",
+                properties: { user: ownerUserObject },
+              }
+            ),
             400: jsonResponse("Invalid user payload.", errorResponse),
             ...authResponses,
             ...serverErrorResponse,
@@ -655,7 +746,14 @@ export function getOpenApiSpec() {
           security: adminSecurity,
           parameters: [{ name: "email", in: "path", required: true, schema: { type: "string", format: "email" } }],
           responses: {
-            200: jsonResponse("User budget state.", jsonObject),
+            200: jsonResponse(
+              "User budget state.",
+              {
+                type: "object",
+                properties: { user: ownerUserStateObject },
+              }
+            ),
+            400: jsonResponse("Invalid email in path.", errorResponse),
             404: jsonResponse("User not found.", errorResponse),
             ...authResponses,
             ...serverErrorResponse,
@@ -664,7 +762,8 @@ export function getOpenApiSpec() {
         patch: {
           tags: ["Admin"],
           operationId: "updateAdminUser",
-          summary: "Update a sidebar user",
+          summary: "Update a sidebar user (upsert)",
+          description: "Upsert: if the email does not exist, the user is created. PATCH never returns 404.",
           security: adminSecurity,
           parameters: [{ name: "email", in: "path", required: true, schema: { type: "string", format: "email" } }],
           requestBody: jsonRequest(
@@ -679,9 +778,14 @@ export function getOpenApiSpec() {
             { budgetUsd: 50, isActive: true }
           ),
           responses: {
-            200: jsonResponse("Updated user.", jsonObject),
+            200: jsonResponse(
+              "Updated user.",
+              {
+                type: "object",
+                properties: { user: ownerUserObject },
+              }
+            ),
             400: jsonResponse("Invalid user payload.", errorResponse),
-            404: jsonResponse("User not found.", errorResponse),
             ...authResponses,
             ...serverErrorResponse,
           },
@@ -690,7 +794,7 @@ export function getOpenApiSpec() {
           tags: ["Admin"],
           operationId: "runAdminUserAction",
           summary: "Run a user action",
-          description: "Supported actions: add-budget and reset-usage.",
+          description: "Supported actions: add-budget (returns full user state) and reset-usage (destructive: deletes all usage rows for the owner's keys).",
           security: adminSecurity,
           parameters: [{ name: "email", in: "path", required: true, schema: { type: "string", format: "email" } }],
           requestBody: jsonRequest(
@@ -699,15 +803,28 @@ export function getOpenApiSpec() {
               required: ["action"],
               properties: {
                 action: { type: "string", enum: ["add-budget", "reset-usage"] },
-                amountUsd: { type: "number", minimum: 0 },
+                amountUsd: {
+                  type: "number",
+                  exclusiveMinimum: 0,
+                  description: "Required when action=add-budget. Must be strictly greater than zero.",
+                },
               },
             },
             { action: "add-budget", amountUsd: 10 }
           ),
           responses: {
-            200: jsonResponse("Action result.", jsonObject),
+            200: jsonResponse(
+              "Action result. add-budget returns { user }. reset-usage returns { user, reset }.",
+              {
+                type: "object",
+                properties: {
+                  user: ownerUserStateObject,
+                  reset: { type: "object", additionalProperties: true },
+                },
+              }
+            ),
             400: jsonResponse("Invalid action.", errorResponse),
-            404: jsonResponse("User not found.", errorResponse),
+            404: jsonResponse("User not found (only thrown by add-budget).", errorResponse),
             ...authResponses,
             ...serverErrorResponse,
           },
@@ -719,7 +836,14 @@ export function getOpenApiSpec() {
           security: adminSecurity,
           parameters: [{ name: "email", in: "path", required: true, schema: { type: "string", format: "email" } }],
           responses: {
-            200: jsonResponse("Deleted user message.", jsonObject),
+            200: jsonResponse(
+              "Deleted user message.",
+              {
+                type: "object",
+                properties: { message: { type: "string", example: "User budget removed" } },
+              }
+            ),
+            400: jsonResponse("Invalid email in path.", errorResponse),
             404: jsonResponse("User not found.", errorResponse),
             ...authResponses,
             ...serverErrorResponse,
@@ -731,9 +855,18 @@ export function getOpenApiSpec() {
           tags: ["Admin"],
           operationId: "listAdminApiKeys",
           summary: "List API keys",
+          description: "Returns the raw key value (no masking). Treat the response as sensitive.",
           security: adminSecurity,
           responses: {
-            200: jsonResponse("API key list.", jsonObject),
+            200: jsonResponse(
+              "API key list. Raw key values are not masked.",
+              {
+                type: "object",
+                properties: {
+                  keys: { type: "array", items: apiKeyObject },
+                },
+              }
+            ),
             ...authResponses,
             ...serverErrorResponse,
           },
@@ -757,7 +890,20 @@ export function getOpenApiSpec() {
             { name: "External app key", owner: "user@example.com" }
           ),
           responses: {
-            201: jsonResponse("Created API key. The full key is returned once.", jsonObject),
+            201: jsonResponse(
+              "Created API key. Raw key is returned in the `key` field (and is also returned by every read endpoint — not just here).",
+              {
+                type: "object",
+                properties: {
+                  key: { type: "string", description: "Raw API key value." },
+                  name: { type: "string" },
+                  id: { type: "string" },
+                  owner: { type: "string", format: "email", nullable: true },
+                  userEmail: { type: "string", format: "email", nullable: true },
+                  machineId: { type: "string", nullable: true },
+                },
+              }
+            ),
             400: jsonResponse("Invalid API key payload.", errorResponse),
             ...authResponses,
             ...serverErrorResponse,
@@ -769,10 +915,17 @@ export function getOpenApiSpec() {
           tags: ["Admin"],
           operationId: "getAdminApiKey",
           summary: "Get one API key",
+          description: "Returns the raw key value (no masking).",
           security: adminSecurity,
           parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
           responses: {
-            200: jsonResponse("API key record.", jsonObject),
+            200: jsonResponse(
+              "API key record. Raw key value is included.",
+              {
+                type: "object",
+                properties: { key: apiKeyObject },
+              }
+            ),
             404: jsonResponse("API key not found.", errorResponse),
             ...authResponses,
             ...serverErrorResponse,
@@ -782,6 +935,7 @@ export function getOpenApiSpec() {
           tags: ["Admin"],
           operationId: "updateAdminApiKey",
           summary: "Update an API key",
+          description: "Send only the fields you want to change. Pass owner/userEmail = \"\" to un-assign.",
           security: adminSecurity,
           parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
           requestBody: jsonRequest(
@@ -797,7 +951,13 @@ export function getOpenApiSpec() {
             { isActive: true, owner: "user@example.com" }
           ),
           responses: {
-            200: jsonResponse("Updated API key.", jsonObject),
+            200: jsonResponse(
+              "Updated API key.",
+              {
+                type: "object",
+                properties: { key: apiKeyObject },
+              }
+            ),
             400: jsonResponse("Invalid API key payload.", errorResponse),
             404: jsonResponse("API key not found.", errorResponse),
             ...authResponses,
@@ -811,7 +971,13 @@ export function getOpenApiSpec() {
           security: adminSecurity,
           parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
           responses: {
-            200: jsonResponse("Deleted API key message.", jsonObject),
+            200: jsonResponse(
+              "Deleted API key message.",
+              {
+                type: "object",
+                properties: { message: { type: "string", example: "Key deleted successfully" } },
+              }
+            ),
             404: jsonResponse("API key not found.", errorResponse),
             ...authResponses,
             ...serverErrorResponse,
@@ -844,6 +1010,7 @@ export function getOpenApiSpec() {
           tags: ["Admin"],
           operationId: "setAdminModelAlias",
           summary: "Set a model alias",
+          description: "Re-setting an alias on the same model is a no-op (no error). Conflict (\"Alias already in use\") only fires when the alias is already mapped to a *different* model.",
           security: adminSecurity,
           requestBody: jsonRequest(
             {
@@ -857,8 +1024,18 @@ export function getOpenApiSpec() {
             { model: "openai/gpt-4o-mini", alias: "fast-chat" }
           ),
           responses: {
-            200: jsonResponse("Alias update result.", jsonObject),
-            400: jsonResponse("Invalid alias payload.", errorResponse),
+            200: jsonResponse(
+              "Alias update result.",
+              {
+                type: "object",
+                properties: {
+                  success: { type: "boolean", example: true },
+                  model: { type: "string" },
+                  alias: { type: "string" },
+                },
+              }
+            ),
+            400: jsonResponse("Invalid alias payload (missing fields or alias already in use).", errorResponse),
             ...authResponses,
             ...serverErrorResponse,
           },
@@ -869,9 +1046,10 @@ export function getOpenApiSpec() {
           tags: ["Admin"],
           operationId: "getAdminPricing",
           summary: "Get pricing configuration",
+          description: "Pricing values are USD per 1 million tokens. The response is a nested map: { provider: { model: { field: number } } }.",
           security: adminSecurity,
           responses: {
-            200: jsonResponse("Pricing configuration.", jsonObject),
+            200: jsonResponse("Pricing configuration. Object keyed by provider, then by model.", jsonObject),
             ...authResponses,
             ...serverErrorResponse,
           },
@@ -880,14 +1058,34 @@ export function getOpenApiSpec() {
           tags: ["Admin"],
           operationId: "updateAdminPricing",
           summary: "Update pricing configuration",
+          description: "Merge update. Allowed fields per model: input, output, cached, reasoning, cache_creation. All values must be non-negative finite numbers (NaN is rejected).",
           security: adminSecurity,
-          requestBody: jsonRequest(jsonObject, {
-            openai: {
-              "gpt-4o-mini": { input: 0.15, output: 0.6, cached: 0.075 },
+          requestBody: jsonRequest(
+            {
+              type: "object",
+              additionalProperties: {
+                type: "object",
+                additionalProperties: {
+                  type: "object",
+                  properties: {
+                    input: { type: "number", minimum: 0 },
+                    output: { type: "number", minimum: 0 },
+                    cached: { type: "number", minimum: 0 },
+                    reasoning: { type: "number", minimum: 0 },
+                    cache_creation: { type: "number", minimum: 0 },
+                  },
+                  additionalProperties: false,
+                },
+              },
             },
-          }),
+            {
+              openai: {
+                "gpt-4o-mini": { input: 0.15, output: 0.6, cached: 0.075 },
+              },
+            }
+          ),
           responses: {
-            200: jsonResponse("Updated pricing configuration.", jsonObject),
+            200: jsonResponse("Updated pricing configuration (full shape, like GET).", jsonObject),
             400: jsonResponse("Invalid pricing payload.", errorResponse),
             ...authResponses,
             ...serverErrorResponse,
@@ -897,6 +1095,7 @@ export function getOpenApiSpec() {
           tags: ["Admin"],
           operationId: "resetAdminPricing",
           summary: "Reset pricing configuration",
+          description: "Scope is determined by query params:\n- provider+model → reset one model\n- provider only → reset whole provider\n- neither → reset all\n- model without provider → ignored, falls back to full reset (no error).",
           security: adminSecurity,
           parameters: [
             { name: "provider", in: "query", schema: { type: "string" } },

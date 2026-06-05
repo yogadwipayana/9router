@@ -72,6 +72,7 @@ async function main() {
     usageDaily: 0,
     enabledModels: 0,
     enabledProviders: 0,
+    pricing: 0,
   };
 
   try {
@@ -195,6 +196,37 @@ async function main() {
         skipDuplicates: true,
       });
       counts.enabledProviders += result.count;
+    }
+
+    const PRICING_FIELDS = ["input", "output", "cached", "reasoning", "cache_creation"];
+    const FIELD_TO_DB = {
+      input: "input",
+      output: "output",
+      cached: "cached",
+      reasoning: "reasoning",
+      cache_creation: "cacheCreation",
+    };
+    const pricingRows = [];
+    for (const row of getKvRows(sqlite, "pricing")) {
+      const models = parseJson(row.value, {});
+      if (!models || typeof models !== "object") continue;
+      for (const [modelId, pricing] of Object.entries(models)) {
+        if (!pricing || typeof pricing !== "object") continue;
+        const data = { providerAlias: row.key, modelId, updatedAt: now };
+        for (const field of PRICING_FIELDS) {
+          if (typeof pricing[field] === "number" && !Number.isNaN(pricing[field])) {
+            data[FIELD_TO_DB[field]] = pricing[field];
+          }
+        }
+        pricingRows.push(data);
+      }
+    }
+    if (pricingRows.length > 0) {
+      const result = await prisma.pricing.createMany({
+        data: pricingRows,
+        skipDuplicates: true,
+      });
+      counts.pricing += result.count;
     }
 
     if (counts.usageHistory > 0) {
