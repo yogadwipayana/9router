@@ -17,7 +17,10 @@ import Card from "./Card";
 import Input from "./Input";
 import Modal from "./Modal";
 import OverviewCards from "@/app/(dashboard)/dashboard/usage/components/OverviewCards";
-import UsageTable, { fmt, fmtTime } from "@/app/(dashboard)/dashboard/usage/components/UsageTable";
+import UsageTable, {
+  fmt,
+  fmtTime,
+} from "@/app/(dashboard)/dashboard/usage/components/UsageTable";
 import ProviderTopology from "@/app/(dashboard)/dashboard/usage/components/ProviderTopology";
 import UsageChart from "@/app/(dashboard)/dashboard/usage/components/UsageChart";
 
@@ -32,21 +35,27 @@ function timeAgo(timestamp) {
 // Auto-update time display every second without re-rendering parent
 function TimeAgo({ timestamp }) {
   const [, setTick] = useState(0);
-  
+
   useEffect(() => {
-    const timer = setInterval(() => setTick(t => t + 1), 1000);
+    const timer = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(timer);
   }, []);
-  
+
   return <>{timeAgo(timestamp)}</>;
 }
 
 function RecentRequests({ requests = [], onResetUsage, resetting = false }) {
   return (
-    <Card className="flex min-w-0 flex-col overflow-hidden" padding="sm" style={{ height: 480 }}>
+    <Card
+      className="flex min-w-0 flex-col overflow-hidden"
+      padding="sm"
+      style={{ height: 480 }}
+    >
       {/* Header */}
       <div className="flex items-center justify-between gap-2 px-1 py-2 border-b border-border shrink-0">
-        <span className="text-xs font-semibold text-text-muted uppercase tracking-wide">Recent Requests</span>
+        <span className="text-xs font-semibold text-text-muted uppercase tracking-wide">
+          Recent Requests
+        </span>
         <Button
           type="button"
           variant="ghost"
@@ -62,13 +71,15 @@ function RecentRequests({ requests = [], onResetUsage, resetting = false }) {
       </div>
 
       {!requests.length ? (
-        <div className="flex-1 flex items-center justify-center text-text-muted text-sm">No requests yet.</div>
+        <div className="flex-1 flex items-center justify-center text-text-muted text-sm">
+          No requests yet.
+        </div>
       ) : (
         <div className="flex-1 overflow-y-auto">
           <table className="w-full table-fixed border-collapse text-xs">
             <colgroup>
               <col style={{ width: 16 }} />
-              <col style={{ width: 50 }} />
+              <col style={{ width: 70 }} />
               <col style={{ width: 70 }} />
               <col style={{ width: 70 }} />
               <col style={{ width: 50 }} />
@@ -76,29 +87,57 @@ function RecentRequests({ requests = [], onResetUsage, resetting = false }) {
             <thead className="sticky top-0 bg-bg z-10">
               <tr className="border-b border-border">
                 <th className="py-1.5 text-left font-semibold text-text-muted"></th>
-                <th className="py-1.5 text-left font-semibold text-text-muted">Model</th>
-                <th className="py-1.5 text-left font-semibold text-text-muted pl-3">API Key</th>
-                <th className="py-1.5 text-right font-semibold text-text-muted pl-3">In / Out</th>
-                <th className="py-1.5 text-right font-semibold text-text-muted">When</th>
+                <th className="py-1.5 text-left font-semibold text-text-muted">
+                  Model
+                </th>
+                <th className="py-1.5 text-left font-semibold text-text-muted pl-3">
+                  API Key
+                </th>
+                <th className="py-1.5 text-right font-semibold text-text-muted pl-3">
+                  In / Out
+                </th>
+                <th className="py-1.5 text-right font-semibold text-text-muted">
+                  When
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/50">
               {requests.map((r, i) => {
-                const ok = !r.status || r.status === "ok" || r.status === "success";
-                const keyLabel = r.keyName || (r.apiKey ? r.apiKey.slice(0, 8) + "..." : "Local");
+                const ok =
+                  !r.status || r.status === "ok" || r.status === "success";
+                const keyLabel =
+                  r.keyName ||
+                  (r.apiKey ? r.apiKey.slice(0, 8) + "..." : "Local");
                 return (
                   <tr key={i} className="hover:bg-bg-subtle transition-colors">
                     <td className="py-1.5">
-                      <span className={`block w-1.5 h-1.5 rounded-full ${ok ? "bg-success" : "bg-error"}`} />
+                      <span
+                        className={`block w-1.5 h-1.5 rounded-full ${ok ? "bg-success" : "bg-error"}`}
+                      />
                     </td>
-                    <td className="py-1.5 font-mono truncate max-w-[50px]" title={r.model}>{r.model}</td>
-                    <td className="py-1.5 pl-3 truncate max-w-[70px] text-text-muted" title={keyLabel}>{keyLabel}</td>
+                    <td
+                      className="py-1.5 font-mono truncate max-w-[70px]"
+                      title={r.model}
+                    >
+                      {r.model}
+                    </td>
+                    <td
+                      className="py-1.5 pl-3 truncate max-w-[70px] text-text-muted"
+                      title={keyLabel}
+                    >
+                      {keyLabel}
+                    </td>
                     <td className="py-1.5 pl-3 text-right truncate max-w-[70px] whitespace-nowrap">
-                      <span className="text-primary">{fmt(r.promptTokens)}↑</span>
-                      {" "}
-                      <span className="text-success">{fmt(r.completionTokens)}↓</span>
+                      <span className="text-primary">
+                        {fmt(r.promptTokens)}↑
+                      </span>{" "}
+                      <span className="text-success">
+                        {fmt(r.completionTokens)}↓
+                      </span>
                     </td>
-                    <td className="py-1.5 text-right text-text-muted truncate max-w-[50px] whitespace-nowrap"><TimeAgo timestamp={r.timestamp} /></td>
+                    <td className="py-1.5 text-right text-text-muted truncate max-w-[50px] whitespace-nowrap">
+                      <TimeAgo timestamp={r.timestamp} />
+                    </td>
                   </tr>
                 );
               })}
@@ -113,11 +152,26 @@ function RecentRequests({ requests = [], onResetUsage, resetting = false }) {
 function sortData(dataMap, pendingMap = {}, sortBy, sortOrder) {
   return Object.entries(dataMap || {})
     .map(([key, data]) => {
-      const totalTokens = (data.promptTokens || 0) + (data.completionTokens || 0);
+      const totalTokens =
+        (data.promptTokens || 0) + (data.completionTokens || 0);
       const totalCost = data.cost || 0;
-      const inputCost = totalTokens > 0 ? (data.promptTokens || 0) * (totalCost / totalTokens) : 0;
-      const outputCost = totalTokens > 0 ? (data.completionTokens || 0) * (totalCost / totalTokens) : 0;
-      return { ...data, key, totalTokens, totalCost, inputCost, outputCost, pending: pendingMap[key] || 0 };
+      const inputCost =
+        totalTokens > 0
+          ? (data.promptTokens || 0) * (totalCost / totalTokens)
+          : 0;
+      const outputCost =
+        totalTokens > 0
+          ? (data.completionTokens || 0) * (totalCost / totalTokens)
+          : 0;
+      return {
+        ...data,
+        key,
+        totalTokens,
+        totalCost,
+        inputCost,
+        outputCost,
+        pending: pendingMap[key] || 0,
+      };
     })
     .sort((a, b) => {
       let valA = a[sortBy];
@@ -132,11 +186,20 @@ function sortData(dataMap, pendingMap = {}, sortBy, sortOrder) {
 
 function getGroupKey(item, keyField) {
   switch (keyField) {
-    case "rawModel": return item.rawModel || "Unknown Model";
-    case "accountName": return item.accountName || `Account ${item.connectionId?.slice(0, 8)}...` || "Unknown Account";
-    case "keyName": return item.keyName || "Unknown Key";
-    case "endpoint": return item.endpoint || "Unknown Endpoint";
-    default: return item[keyField] || "Unknown";
+    case "rawModel":
+      return item.rawModel || "Unknown Model";
+    case "accountName":
+      return (
+        item.accountName ||
+        `Account ${item.connectionId?.slice(0, 8)}...` ||
+        "Unknown Account"
+      );
+    case "keyName":
+      return item.keyName || "Unknown Key";
+    case "endpoint":
+      return item.endpoint || "Unknown Endpoint";
+    default:
+      return item[keyField] || "Unknown";
   }
 }
 
@@ -148,7 +211,17 @@ function groupDataByKey(data, keyField) {
     if (!groups[gk]) {
       groups[gk] = {
         groupKey: gk,
-        summary: { requests: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: 0, inputCost: 0, outputCost: 0, lastUsed: null, pending: 0 },
+        summary: {
+          requests: 0,
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          cost: 0,
+          inputCost: 0,
+          outputCost: 0,
+          lastUsed: null,
+          pending: 0,
+        },
         items: [],
       };
     }
@@ -161,7 +234,10 @@ function groupDataByKey(data, keyField) {
     s.inputCost += item.inputCost || 0;
     s.outputCost += item.outputCost || 0;
     s.pending += item.pending || 0;
-    if (item.lastUsed && (!s.lastUsed || new Date(item.lastUsed) > new Date(s.lastUsed))) {
+    if (
+      item.lastUsed &&
+      (!s.lastUsed || new Date(item.lastUsed) > new Date(s.lastUsed))
+    ) {
       s.lastUsed = item.lastUsed;
     }
     groups[gk].items.push(item);
@@ -215,7 +291,11 @@ const PERIODS = [
   { value: "60d", label: "60D" },
 ];
 
-export default function UsageStats({ period: periodProp, setPeriod: setPeriodProp, hidePeriodSelector = false } = {}) {
+export default function UsageStats({
+  period: periodProp,
+  setPeriod: setPeriodProp,
+  hidePeriodSelector = false,
+} = {}) {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -244,7 +324,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
   // Always include noAuth free providers (e.g. opencode) regardless of connections
   useEffect(() => {
     fetch("/api/providers")
-      .then((r) => r.ok ? r.json() : null)
+      .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         const seen = new Set();
         const unique = (d?.connections || []).filter((c) => {
@@ -273,7 +353,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
     }
 
     fetch(`/api/usage/stats?period=${period}`)
-      .then((r) => r.ok ? r.json() : null)
+      .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data) setStats((prev) => ({ ...prev, ...data }));
       })
@@ -309,16 +389,22 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
     return () => es.close();
   }, []);
 
-  const toggleSort = useCallback((tableType, field) => {
-    const params = new URLSearchParams(searchParams.toString());
-    if (params.get("sortBy") === field) {
-      params.set("sortOrder", params.get("sortOrder") === "asc" ? "desc" : "asc");
-    } else {
-      params.set("sortBy", field);
-      params.set("sortOrder", "asc");
-    }
-    router.replace(`?${params.toString()}`, { scroll: false });
-  }, [searchParams, router]);
+  const toggleSort = useCallback(
+    (tableType, field) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (params.get("sortBy") === field) {
+        params.set(
+          "sortOrder",
+          params.get("sortOrder") === "asc" ? "desc" : "asc",
+        );
+      } else {
+        params.set("sortBy", field);
+        params.set("sortOrder", "asc");
+      }
+      router.replace(`?${params.toString()}`, { scroll: false });
+    },
+    [searchParams, router],
+  );
 
   const openResetUsageModal = useCallback(() => {
     setResetPassword("");
@@ -333,44 +419,47 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
     setResetPasswordError("");
   }, [resettingUsage]);
 
-  const handleResetUsage = useCallback(async (event) => {
-    event?.preventDefault();
-    if (resettingUsage) return;
-    if (!resetPassword.trim()) {
-      setResetPasswordError("Password is required");
-      return;
-    }
-
-    setResettingUsage(true);
-    setResetPasswordError("");
-    try {
-      const res = await fetch(`/api/usage/reset?period=${period}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        cache: "no-store",
-        body: JSON.stringify({ password: resetPassword }),
-      });
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        throw new Error(data.error || "Failed to reset usage");
+  const handleResetUsage = useCallback(
+    async (event) => {
+      event?.preventDefault();
+      if (resettingUsage) return;
+      if (!resetPassword.trim()) {
+        setResetPasswordError("Password is required");
+        return;
       }
 
-      setStats(data.stats || null);
-      setChartRefreshKey((value) => value + 1);
-      setResetModalOpen(false);
-      setResetPassword("");
-      notifySuccess("Usage statistics reset");
-    } catch (error) {
-      const message = error.message || "Failed to reset usage";
-      setResetPasswordError(message);
-      if (!message.toLowerCase().includes("password")) {
-        notifyError(message);
+      setResettingUsage(true);
+      setResetPasswordError("");
+      try {
+        const res = await fetch(`/api/usage/reset?period=${period}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+          body: JSON.stringify({ password: resetPassword }),
+        });
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          throw new Error(data.error || "Failed to reset usage");
+        }
+
+        setStats(data.stats || null);
+        setChartRefreshKey((value) => value + 1);
+        setResetModalOpen(false);
+        setResetPassword("");
+        notifySuccess("Usage statistics reset");
+      } catch (error) {
+        const message = error.message || "Failed to reset usage";
+        setResetPasswordError(message);
+        if (!message.toLowerCase().includes("password")) {
+          notifyError(message);
+        }
+      } finally {
+        setResettingUsage(false);
       }
-    } finally {
-      setResettingUsage(false);
-    }
-  }, [notifyError, notifySuccess, period, resetPassword, resettingUsage]);
+    },
+    [notifyError, notifySuccess, period, resetPassword, resettingUsage],
+  );
 
   // Compute active table data
   const activeTableConfig = useMemo(() => {
@@ -380,22 +469,42 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
         const pendingMap = stats.pending?.byModel || {};
         return {
           columns: MODEL_COLUMNS,
-          groupedData: groupDataByKey(sortData(stats.byModel, pendingMap, sortBy, sortOrder), "rawModel"),
+          groupedData: groupDataByKey(
+            sortData(stats.byModel, pendingMap, sortBy, sortOrder),
+            "rawModel",
+          ),
           storageKey: "usage-stats:expanded-models",
           emptyMessage: "No usage recorded yet.",
           renderSummaryCells: (group) => (
             <>
               <td className="px-6 py-3 text-text-muted">—</td>
-              <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
-              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(group.summary.lastUsed)}</td>
+              <td className="px-6 py-3 text-right">
+                {fmt(group.summary.requests)}
+              </td>
+              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">
+                {fmtTime(group.summary.lastUsed)}
+              </td>
             </>
           ),
           renderDetailCells: (item) => (
             <>
-              <td className={`px-6 py-3 font-medium transition-colors ${item.pending > 0 ? "text-primary" : ""}`}>{item.rawModel}</td>
-              <td className="px-6 py-3"><Badge variant={item.pending > 0 ? "primary" : "neutral"} size="sm">{item.provider}</Badge></td>
+              <td
+                className={`px-6 py-3 font-medium transition-colors ${item.pending > 0 ? "text-primary" : ""}`}
+              >
+                {item.rawModel}
+              </td>
+              <td className="px-6 py-3">
+                <Badge
+                  variant={item.pending > 0 ? "primary" : "neutral"}
+                  size="sm"
+                >
+                  {item.provider}
+                </Badge>
+              </td>
               <td className="px-6 py-3 text-right">{fmt(item.requests)}</td>
-              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(item.lastUsed)}</td>
+              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">
+                {fmtTime(item.lastUsed)}
+              </td>
             </>
           ),
         };
@@ -403,34 +512,63 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       case "account": {
         const pendingMap = {};
         if (stats?.pending?.byAccount) {
-          Object.entries(stats.byAccount || {}).forEach(([accountKey, data]) => {
-            const connPending = stats.pending.byAccount[data.connectionId];
-            if (connPending) {
-              const modelKey = data.provider ? `${data.rawModel} (${data.provider})` : data.rawModel;
-              pendingMap[accountKey] = connPending[modelKey] || 0;
-            }
-          });
+          Object.entries(stats.byAccount || {}).forEach(
+            ([accountKey, data]) => {
+              const connPending = stats.pending.byAccount[data.connectionId];
+              if (connPending) {
+                const modelKey = data.provider
+                  ? `${data.rawModel} (${data.provider})`
+                  : data.rawModel;
+                pendingMap[accountKey] = connPending[modelKey] || 0;
+              }
+            },
+          );
         }
         return {
           columns: ACCOUNT_COLUMNS,
-          groupedData: groupDataByKey(sortData(stats.byAccount, pendingMap, sortBy, sortOrder), "accountName"),
+          groupedData: groupDataByKey(
+            sortData(stats.byAccount, pendingMap, sortBy, sortOrder),
+            "accountName",
+          ),
           storageKey: "usage-stats:expanded-accounts",
           emptyMessage: "No account-specific usage recorded yet.",
           renderSummaryCells: (group) => (
             <>
               <td className="px-6 py-3 text-text-muted">—</td>
               <td className="px-6 py-3 text-text-muted">—</td>
-              <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
-              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(group.summary.lastUsed)}</td>
+              <td className="px-6 py-3 text-right">
+                {fmt(group.summary.requests)}
+              </td>
+              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">
+                {fmtTime(group.summary.lastUsed)}
+              </td>
             </>
           ),
           renderDetailCells: (item) => (
             <>
-              <td className={`px-6 py-3 font-medium transition-colors ${item.pending > 0 ? "text-primary" : ""}`}>{item.accountName || `Account ${item.connectionId?.slice(0, 8)}...`}</td>
-              <td className={`px-6 py-3 font-medium transition-colors ${item.pending > 0 ? "text-primary" : ""}`}>{item.rawModel}</td>
-              <td className="px-6 py-3"><Badge variant={item.pending > 0 ? "primary" : "neutral"} size="sm">{item.provider}</Badge></td>
+              <td
+                className={`px-6 py-3 font-medium transition-colors ${item.pending > 0 ? "text-primary" : ""}`}
+              >
+                {item.accountName ||
+                  `Account ${item.connectionId?.slice(0, 8)}...`}
+              </td>
+              <td
+                className={`px-6 py-3 font-medium transition-colors ${item.pending > 0 ? "text-primary" : ""}`}
+              >
+                {item.rawModel}
+              </td>
+              <td className="px-6 py-3">
+                <Badge
+                  variant={item.pending > 0 ? "primary" : "neutral"}
+                  size="sm"
+                >
+                  {item.provider}
+                </Badge>
+              </td>
               <td className="px-6 py-3 text-right">{fmt(item.requests)}</td>
-              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(item.lastUsed)}</td>
+              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">
+                {fmtTime(item.lastUsed)}
+              </td>
             </>
           ),
         };
@@ -438,24 +576,37 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       case "apiKey": {
         return {
           columns: API_KEY_COLUMNS,
-          groupedData: groupDataByKey(sortData(stats.byApiKey, {}, sortBy, sortOrder), "keyName"),
+          groupedData: groupDataByKey(
+            sortData(stats.byApiKey, {}, sortBy, sortOrder),
+            "keyName",
+          ),
           storageKey: "usage-stats:expanded-apikeys",
           emptyMessage: "No API key usage recorded yet.",
           renderSummaryCells: (group) => (
             <>
               <td className="px-6 py-3 text-text-muted">—</td>
               <td className="px-6 py-3 text-text-muted">—</td>
-              <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
-              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(group.summary.lastUsed)}</td>
+              <td className="px-6 py-3 text-right">
+                {fmt(group.summary.requests)}
+              </td>
+              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">
+                {fmtTime(group.summary.lastUsed)}
+              </td>
             </>
           ),
           renderDetailCells: (item) => (
             <>
               <td className="px-6 py-3 font-medium">{item.keyName}</td>
               <td className="px-6 py-3">{item.rawModel}</td>
-              <td className="px-6 py-3"><Badge variant="neutral" size="sm">{item.provider}</Badge></td>
+              <td className="px-6 py-3">
+                <Badge variant="neutral" size="sm">
+                  {item.provider}
+                </Badge>
+              </td>
               <td className="px-6 py-3 text-right">{fmt(item.requests)}</td>
-              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(item.lastUsed)}</td>
+              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">
+                {fmtTime(item.lastUsed)}
+              </td>
             </>
           ),
         };
@@ -464,24 +615,39 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       default: {
         return {
           columns: ENDPOINT_COLUMNS,
-          groupedData: groupDataByKey(sortData(stats.byEndpoint, {}, sortBy, sortOrder), "endpoint"),
+          groupedData: groupDataByKey(
+            sortData(stats.byEndpoint, {}, sortBy, sortOrder),
+            "endpoint",
+          ),
           storageKey: "usage-stats:expanded-endpoints",
           emptyMessage: "No endpoint usage recorded yet.",
           renderSummaryCells: (group) => (
             <>
               <td className="px-6 py-3 text-text-muted">—</td>
               <td className="px-6 py-3 text-text-muted">—</td>
-              <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
-              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(group.summary.lastUsed)}</td>
+              <td className="px-6 py-3 text-right">
+                {fmt(group.summary.requests)}
+              </td>
+              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">
+                {fmtTime(group.summary.lastUsed)}
+              </td>
             </>
           ),
           renderDetailCells: (item) => (
             <>
-              <td className="px-6 py-3 font-medium font-mono text-sm">{item.endpoint}</td>
+              <td className="px-6 py-3 font-medium font-mono text-sm">
+                {item.endpoint}
+              </td>
               <td className="px-6 py-3">{item.rawModel}</td>
-              <td className="px-6 py-3"><Badge variant="neutral" size="sm">{item.provider}</Badge></td>
+              <td className="px-6 py-3">
+                <Badge variant="neutral" size="sm">
+                  {item.provider}
+                </Badge>
+              </td>
               <td className="px-6 py-3 text-right">{fmt(item.requests)}</td>
-              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(item.lastUsed)}</td>
+              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">
+                {fmtTime(item.lastUsed)}
+              </td>
             </>
           ),
         };
@@ -489,150 +655,176 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
     }
   }, [stats, tableView, sortBy, sortOrder]);
 
-  if (!stats && !loading) return <div className="text-text-muted">Failed to load usage statistics.</div>;
+  if (!stats && !loading)
+    return (
+      <div className="text-text-muted">Failed to load usage statistics.</div>
+    );
 
   const spinner = (
     <div className="flex items-center justify-center py-12 text-text-muted">
-      <span className="material-symbols-outlined text-[32px] animate-spin">progress_activity</span>
+      <span className="material-symbols-outlined text-[32px] animate-spin">
+        progress_activity
+      </span>
     </div>
   );
 
   return (
     <>
-    <div className="flex min-w-0 flex-col gap-6">
-      {/* Period selector (hidden when controlled by parent) */}
-      {!hidePeriodSelector && (
-        <div className="flex w-full items-center gap-2 sm:w-auto sm:self-end">
-          <div className="grid flex-1 grid-cols-5 items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1 sm:flex sm:flex-none">
-            {PERIODS.map((p) => (
-              <button
-                key={p.value}
-                onClick={() => setPeriod(p.value)}
-                disabled={fetching}
-                className={`rounded-md px-3 py-1 text-sm font-medium transition-colors ${period === p.value ? "bg-primary text-white shadow-sm" : "text-text-muted hover:bg-bg-hover hover:text-text"}`}
-              >
-                {p.label}
-              </button>
-            ))}
+      <div className="flex min-w-0 flex-col gap-6">
+        {/* Period selector (hidden when controlled by parent) */}
+        {!hidePeriodSelector && (
+          <div className="flex w-full items-center gap-2 sm:w-auto sm:self-end">
+            <div className="grid flex-1 grid-cols-5 items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1 sm:flex sm:flex-none">
+              {PERIODS.map((p) => (
+                <button
+                  key={p.value}
+                  onClick={() => setPeriod(p.value)}
+                  disabled={fetching}
+                  className={`rounded-md px-3 py-1 text-sm font-medium transition-colors ${period === p.value ? "bg-primary text-white shadow-sm" : "text-text-muted hover:bg-bg-hover hover:text-text"}`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            {fetching && (
+              <span className="material-symbols-outlined text-[16px] text-text-muted animate-spin">
+                progress_activity
+              </span>
+            )}
           </div>
-          {fetching && (
-            <span className="material-symbols-outlined text-[16px] text-text-muted animate-spin">progress_activity</span>
-          )}
-        </div>
-      )}
-
-      {/* Overview cards */}
-      {loading ? spinner : <OverviewCards stats={stats} />}
-
-      {/* Provider topology + Recent Requests */}
-      {loading ? spinner : (
-        <div className="grid min-w-0 grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,2fr)_minmax(420px,3fr)]">
-          <ProviderTopology
-            providers={providers}
-            activeRequests={stats.activeRequests || []}
-            lastProvider={stats.recentRequests?.[0]?.provider || ""}
-            errorProvider={stats.errorProvider || ""}
-          />
-          <RecentRequests
-            requests={stats.recentRequests || []}
-            onResetUsage={openResetUsageModal}
-            resetting={resettingUsage}
-          />
-        </div>
-      )}
-
-      {/* Token / Cost chart - sync period */}
-      {loading ? spinner : <UsageChart key={chartRefreshKey} period={period} />}
-
-      {/* Table with dropdown selector */}
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <select
-            value={tableView}
-            onChange={(e) => setTableView(e.target.value)}
-            className="w-full rounded-lg border border-border bg-surface px-3 py-1.5 text-sm font-medium text-text-main focus:outline-none focus:ring-2 focus:ring-primary/50 sm:w-auto"
-            style={{ colorScheme: 'auto' }}
-          >
-            {TABLE_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
-          <div className="grid grid-cols-2 items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1 sm:flex">
-            <button
-              onClick={() => setViewMode("costs")}
-              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "costs" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
-            >
-              Costs
-            </button>
-            <button
-              onClick={() => setViewMode("tokens")}
-              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "tokens" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
-            >
-              Tokens
-            </button>
-          </div>
-        </div>
-        {loading ? spinner : activeTableConfig && (
-          <UsageTable
-            title=""
-            columns={activeTableConfig.columns}
-            groupedData={activeTableConfig.groupedData}
-            tableType={tableView}
-            sortBy={sortBy}
-            sortOrder={sortOrder}
-            onToggleSort={toggleSort}
-            viewMode={viewMode}
-            storageKey={activeTableConfig.storageKey}
-            renderSummaryCells={activeTableConfig.renderSummaryCells}
-            renderDetailCells={activeTableConfig.renderDetailCells}
-            emptyMessage={activeTableConfig.emptyMessage}
-          />
         )}
+
+        {/* Overview cards */}
+        {loading ? spinner : <OverviewCards stats={stats} />}
+
+        {/* Provider topology + Recent Requests */}
+        {loading ? (
+          spinner
+        ) : (
+          <div className="grid min-w-0 grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,2fr)_minmax(420px,3fr)]">
+            <ProviderTopology
+              providers={providers}
+              activeRequests={stats.activeRequests || []}
+              lastProvider={stats.recentRequests?.[0]?.provider || ""}
+              errorProvider={stats.errorProvider || ""}
+            />
+            <RecentRequests
+              requests={stats.recentRequests || []}
+              onResetUsage={openResetUsageModal}
+              resetting={resettingUsage}
+            />
+          </div>
+        )}
+
+        {/* Token / Cost chart - sync period */}
+        {loading ? (
+          spinner
+        ) : (
+          <UsageChart key={chartRefreshKey} period={period} />
+        )}
+
+        {/* Table with dropdown selector */}
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <select
+              value={tableView}
+              onChange={(e) => setTableView(e.target.value)}
+              className="w-full rounded-lg border border-border bg-surface px-3 py-1.5 text-sm font-medium text-text-main focus:outline-none focus:ring-2 focus:ring-primary/50 sm:w-auto"
+              style={{ colorScheme: "auto" }}
+            >
+              {TABLE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <div className="grid grid-cols-2 items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1 sm:flex">
+              <button
+                onClick={() => setViewMode("costs")}
+                className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "costs" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
+              >
+                Costs
+              </button>
+              <button
+                onClick={() => setViewMode("tokens")}
+                className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "tokens" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
+              >
+                Tokens
+              </button>
+            </div>
+          </div>
+          {loading
+            ? spinner
+            : activeTableConfig && (
+                <UsageTable
+                  title=""
+                  columns={activeTableConfig.columns}
+                  groupedData={activeTableConfig.groupedData}
+                  tableType={tableView}
+                  sortBy={sortBy}
+                  sortOrder={sortOrder}
+                  onToggleSort={toggleSort}
+                  viewMode={viewMode}
+                  storageKey={activeTableConfig.storageKey}
+                  renderSummaryCells={activeTableConfig.renderSummaryCells}
+                  renderDetailCells={activeTableConfig.renderDetailCells}
+                  emptyMessage={activeTableConfig.emptyMessage}
+                />
+              )}
+        </div>
       </div>
-    </div>
-    <Modal
-      isOpen={resetModalOpen}
-      onClose={closeResetUsageModal}
-      title="Reset Usage"
-      size="sm"
-      closeOnOverlay={!resettingUsage}
-      footer={
-        <>
-          <Button variant="ghost" onClick={closeResetUsageModal} disabled={resettingUsage}>
-            Cancel
-          </Button>
-          <Button
-            type="submit"
-            form="reset-usage-form"
-            variant="danger"
-            icon="delete"
-            loading={resettingUsage}
-          >
-            Reset Usage
-          </Button>
-        </>
-      }
-    >
-      <form id="reset-usage-form" onSubmit={handleResetUsage} className="flex flex-col gap-4">
-        <p className="text-sm text-text-muted">
-          This deletes usage totals, request history, and request details. Enter the dashboard password to continue.
-        </p>
-        <Input
-          label="Password"
-          type="password"
-          value={resetPassword}
-          onChange={(event) => {
-            setResetPassword(event.target.value);
-            if (resetPasswordError) setResetPasswordError("");
-          }}
-          error={resetPasswordError}
-          disabled={resettingUsage}
-          placeholder="Enter password"
-          autoFocus
-          autoComplete="current-password"
-        />
-      </form>
-    </Modal>
+      <Modal
+        isOpen={resetModalOpen}
+        onClose={closeResetUsageModal}
+        title="Reset Usage"
+        size="sm"
+        closeOnOverlay={!resettingUsage}
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              onClick={closeResetUsageModal}
+              disabled={resettingUsage}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              form="reset-usage-form"
+              variant="danger"
+              icon="delete"
+              loading={resettingUsage}
+            >
+              Reset Usage
+            </Button>
+          </>
+        }
+      >
+        <form
+          id="reset-usage-form"
+          onSubmit={handleResetUsage}
+          className="flex flex-col gap-4"
+        >
+          <p className="text-sm text-text-muted">
+            This deletes usage totals, request history, and request details.
+            Enter the dashboard password to continue.
+          </p>
+          <Input
+            label="Password"
+            type="password"
+            value={resetPassword}
+            onChange={(event) => {
+              setResetPassword(event.target.value);
+              if (resetPasswordError) setResetPasswordError("");
+            }}
+            error={resetPasswordError}
+            disabled={resettingUsage}
+            placeholder="Enter password"
+            autoFocus
+            autoComplete="current-password"
+          />
+        </form>
+      </Modal>
     </>
   );
 }
