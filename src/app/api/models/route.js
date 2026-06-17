@@ -4,6 +4,7 @@ import { getEnabledModels } from "@/lib/disabledModelsDb";
 import { AI_MODELS } from "@/shared/constants/config";
 import { getProviderAlias } from "@/shared/constants/providers";
 import { buildModelManagementCatalog } from "@/app/api/v1/models/route.js";
+import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 
 // GET /api/models - Get models with aliases
 export async function GET(request) {
@@ -25,10 +26,12 @@ export async function GET(request) {
       })
       .map((m) => {
         const fullModel = `${m.provider}/${m.model}`;
+        const c = getCapabilitiesForModel(m.provider, m.model);
         return {
           ...m,
           fullModel,
           alias: modelAliases[fullModel] || m.model,
+          caps: { vision: c.vision, search: c.search, reasoning: c.reasoning },
         };
       });
 
