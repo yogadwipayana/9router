@@ -1,6 +1,6 @@
 import { proxy as dashboardProxy } from "./dashboardGuard";
 
-export function proxy(request) {
+export default async function proxy(request) {
   return dashboardProxy(request);
 }
 
