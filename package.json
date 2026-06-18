@@ -1,6 +1,6 @@
 {
   "name": "9router-app",
-  "version": "0.5.2",
+  "version": "0.5.4",
   "description": "9Router web dashboard",
   "private": true,
   "scripts": {
@@ -25,6 +25,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@monaco-editor/react": "^4.7.0",
+    "@next/third-parties": "^16.2.9",
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "@xyflow/react": "^12.10.1",
