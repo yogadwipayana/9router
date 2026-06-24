@@ -22,6 +22,7 @@ import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
+const CONNECTIONS_PER_PAGE = 10;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -53,6 +54,8 @@ export default function ProviderDetailPage() {
   const [testingModelIds, setTestingModelIds] = useState(() => new Set());
   const [showAddCustomModel, setShowAddCustomModel] = useState(false);
   const [selectedConnectionIds, setSelectedConnectionIds] = useState([]);
+  const [connectionSort, setConnectionSort] = useState("priority");
+  const [connectionPage, setConnectionPage] = useState(1);
   const [bulkProxyPoolId, setBulkProxyPoolId] = useState("__none__");
   const [bulkUpdatingProxy, setBulkUpdatingProxy] = useState(false);
   const [providerStrategy, setProviderStrategy] = useState(null);
@@ -770,6 +773,10 @@ export default function ProviderDetailPage() {
     setSelectedConnectionIds((prev) => prev.filter((id) => connections.some((conn) => conn.id === id)));
   }, [connections]);
 
+  useEffect(() => {
+    setConnectionPage(1);
+  }, [connectionSort, providerId]);
+
   const selectedProxySummary = (() => {
     if (selectedConnections.length === 0) return "";
     const poolIds = new Set(selectedConnections.map((conn) => conn.providerSpecificData?.proxyPoolId || "__none__"));
@@ -840,20 +847,32 @@ export default function ProviderDetailPage() {
 
   const isSelected = (connectionId) => selectedConnectionIds.includes(connectionId);
 
+  const sortedConnections = connectionSort === "newest"
+    ? [...connections].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+    : connections;
+  const connectionsTotalPages = Math.max(1, Math.ceil(sortedConnections.length / CONNECTIONS_PER_PAGE));
+  const connectionsSafePage = Math.min(connectionPage, connectionsTotalPages);
+  const connectionsPageStart = (connectionsSafePage - 1) * CONNECTIONS_PER_PAGE;
+  const pagedConnections = sortedConnections.slice(connectionsPageStart, connectionsPageStart + CONNECTIONS_PER_PAGE);
+  const showReorderArrows = connectionSort === "priority";
+
   const connectionsList = (
     <div className="flex min-w-0 flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03]">
-      {connections
-        .map((conn, index) => (
+      {pagedConnections
+        .map((conn, index) => {
+          const absoluteIndex = connectionsPageStart + index;
+          return (
           <div key={conn.id} className="flex min-w-0 items-stretch">
             <div className="flex-1 min-w-0">
               <ConnectionRow
                 connection={conn}
                 proxyPools={proxyPools}
                 isOAuth={isOAuth}
-                isFirst={index === 0}
-                isLast={index === connections.length - 1}
-                onMoveUp={() => handleSwapPriority(index, index - 1)}
-                onMoveDown={() => handleSwapPriority(index, index + 1)}
+                showReorder={showReorderArrows}
+                isFirst={absoluteIndex === 0}
+                isLast={absoluteIndex === connections.length - 1}
+                onMoveUp={() => handleSwapPriority(absoluteIndex, absoluteIndex - 1)}
+                onMoveDown={() => handleSwapPriority(absoluteIndex, absoluteIndex + 1)}
                 onToggleActive={(isActive) => handleUpdateConnectionStatus(conn.id, isActive)}
                 autoPing={providerId === "claude" && conn.authType === "oauth" ? {
                   on: autoPing.connections[conn.id] === true,
@@ -886,7 +905,8 @@ export default function ProviderDetailPage() {
               />
             </div>
           </div>
-        ))}
+          );
+        })}
     </div>
   );
 
@@ -1357,6 +1377,20 @@ export default function ProviderDetailPage() {
                   </select>
                 </div>
               )} */}
+              {/* Sort connections */}
+              {connections.length > 1 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-text-muted font-medium">Sort</span>
+                  <select
+                    value={connectionSort}
+                    onChange={(e) => setConnectionSort(e.target.value)}
+                    className="text-xs px-2 py-1 border border-border rounded-md bg-background focus:outline-none focus:border-primary"
+                  >
+                    <option value="priority">Priority (manual)</option>
+                    <option value="newest">Newest added</option>
+                  </select>
+                </div>
+              )}
               {/* Round Robin toggle */}
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs text-text-muted font-medium">Round Robin</span>
@@ -1448,6 +1482,36 @@ export default function ProviderDetailPage() {
                 </div>
               )}
               {connectionsList}
+              {connectionsTotalPages > 1 && (
+                <div className="mt-3 flex items-center justify-between gap-2">
+                  <span className="text-xs text-text-muted">
+                    {connectionsPageStart + 1}-{Math.min(connectionsPageStart + CONNECTIONS_PER_PAGE, sortedConnections.length)} of {sortedConnections.length}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      icon="chevron_left"
+                      disabled={connectionsSafePage <= 1}
+                      onClick={() => setConnectionPage((p) => Math.max(1, p - 1))}
+                    >
+                      Prev
+                    </Button>
+                    <span className="text-xs text-text-muted">
+                      {connectionsSafePage} / {connectionsTotalPages}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      icon="chevron_right"
+                      disabled={connectionsSafePage >= connectionsTotalPages}
+                      onClick={() => setConnectionPage((p) => Math.min(connectionsTotalPages, p + 1))}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
+              )}
               {!isCompatible && (
                 <div className="mt-4 grid grid-cols-1 gap-2 sm:flex">
                   {providerId === "iflow" && (
