@@ -59,10 +59,27 @@ export async function getKiroUsage(accessToken, providerSpecificData, proxyOptio
 
   // For api-key auth, never inject the shared default placeholder profileArn —
   // CodeWhisperer 403s a request whose profileArn isn't owned by the key's
-  // account. Only send a profileArn actually resolved for this connection.
-  const profileArn = isApiKey
+  // account. The same is true for IDC: the shared Builder ID default ARN is
+  // not owned by the org's IDC account, so sending it guarantees a 403 on
+  // GetUsageLimits. In both cases only send a profileArn actually resolved for
+  // this connection (omitting it otherwise).
+  const noDefaultArn = isApiKey || authMethod === "idc";
+  const profileArn = noDefaultArn
     ? (providerSpecificData?.profileArn || "")
     : (providerSpecificData?.profileArn || resolveDefaultProfileArn(authMethod));
+
+  // Region-aware quota hosts. The registry usage hosts are pinned to us-east-1,
+  // but a connection's resources may live elsewhere (e.g. an IDC profile in
+  // eu-central-1). Prefer the region embedded in the profileArn, then the
+  // region stored at login, then us-east-1.
+  const REGION_RE = /^[a-z]{2}-[a-z]+-\d{1,2}$/;
+  const arnRegion = typeof profileArn === "string" ? (profileArn.split(":")[3] || "") : "";
+  const psdRegion = typeof providerSpecificData?.region === "string" ? providerSpecificData.region.trim() : "";
+  const region = REGION_RE.test(arnRegion) ? arnRegion : (REGION_RE.test(psdRegion) ? psdRegion : "us-east-1");
+  const usage = U("kiro");
+  const cwHost = (usage.cwHost || "").replace("us-east-1", region);
+  const qHost = (usage.qHost || "").replace("us-east-1", region);
+  const limitsPath = usage.limitsPath || "";
 
   const getUsageParams = new URLSearchParams({
     isEmailRequired: "true",
@@ -75,7 +92,7 @@ export async function getKiroUsage(accessToken, providerSpecificData, proxyOptio
     {
       name: "codewhisperer-get",
       run: async () => proxyAwareFetch(
-        `${U("kiro").cwHost}${U("kiro").limitsPath}?${getUsageParams.toString()}`,
+        `${cwHost}${limitsPath}?${getUsageParams.toString()}`,
         {
           method: "GET",
           headers: {
@@ -91,7 +108,7 @@ export async function getKiroUsage(accessToken, providerSpecificData, proxyOptio
     },
     {
       name: "codewhisperer-post",
-      run: async () => proxyAwareFetch(U("kiro").cwHost, {
+      run: async () => proxyAwareFetch(cwHost, {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${accessToken}`,
@@ -115,7 +132,7 @@ export async function getKiroUsage(accessToken, providerSpecificData, proxyOptio
           ...(profileArn ? { profileArn } : {}),
           resourceType: "AGENTIC_REQUEST",
         });
-        return proxyAwareFetch(`${U("kiro").qHost}${U("kiro").limitsPath}?${params}`, {
+        return proxyAwareFetch(`${qHost}${limitsPath}?${params}`, {
           method: "GET",
           headers: {
             "Authorization": `Bearer ${accessToken}`,
@@ -150,8 +167,12 @@ export async function getKiroUsage(accessToken, providerSpecificData, proxyOptio
   }
 
   if (sawAuthError && authMethod === "idc") {
+    const detail = errors.length ? ` [${errors.join(" | ")}]` : "";
+    console.log(`[KIRO_USAGE] idc region=${region} profileArn=${profileArn || "(none)"} ::${detail}`);
     return {
-      message: "Kiro quota API is unavailable for the current AWS IAM Identity Center session. Chat may still work. If this persists after renewing your session, reconnect Kiro.",
+      message:
+        "Kiro quota API is unavailable for the current AWS IAM Identity Center session. Chat may still work. If this persists after renewing your session, reconnect Kiro." +
+        detail,
       quotas: {},
     };
   }

@@ -38,7 +38,27 @@ export class KiroExecutor extends BaseExecutor {
   }
 
   /**
-   * Auth-aware endpoint ordering.
+   * Resolve the AWS region for this connection. IDC connections persist the
+   * org region in providerSpecificData.region (from the login form); other
+   * methods carry it in the profileArn (arn:aws:codewhisperer:{region}:...).
+   * Falls back to us-east-1 (Builder ID / social home region).
+   */
+  resolveRegion(credentials) {
+    const REGION_RE = /^[a-z]{2}-[a-z]+-\d{1,2}$/;
+    const psd = credentials?.providerSpecificData || {};
+    // The profileArn is the source of truth for where inference runs
+    // (arn:aws:codewhisperer:{region}:...). Prefer it. Fall back to the region
+    // stored at login (IdC home region) and finally us-east-1.
+    const arn = typeof psd.profileArn === "string" ? psd.profileArn : "";
+    const arnRegion = arn.split(":")[3];
+    if (arnRegion && REGION_RE.test(arnRegion)) return arnRegion;
+    const fromPsd = typeof psd.region === "string" ? psd.region.trim() : "";
+    if (REGION_RE.test(fromPsd)) return fromPsd;
+    return "us-east-1";
+  }
+
+  /**
+   * Auth-aware + region-aware endpoint ordering.
    *
    * API-key Kiro connections store a raw CodeWhisperer credential (validated
    * against codewhisperer.us-east-1.amazonaws.com via ListAvailableProfiles).
@@ -49,14 +69,33 @@ export class KiroExecutor extends BaseExecutor {
    * CodeWhisperer hosts FIRST, mirroring the Kiro-Go reference fork which never
    * routes api-key traffic through kiro.dev. OAuth keeps the default order
    * (kiro.dev first) since its token is what that gateway accepts.
+   *
+   * Region: the registry baseUrls are pinned to us-east-1. For accounts whose
+   * home region is different (e.g. IDC in eu-central-1), the regional
+   * CodeWhisperer/Q endpoints are the correct targets, so we rewrite the
+   * *.amazonaws.com hosts to the connection's region and try them first (the
+   * us-east-1 kiro.dev gateway does not serve non-us-east-1 profiles).
    */
   getOrderedBaseUrls(credentials) {
     const baseUrls = this.getBaseUrls();
     const isApiKey = credentials?.providerSpecificData?.authMethod === "api_key";
-    if (!isApiKey) return baseUrls;
-    const amazon = baseUrls.filter((u) => u.includes("amazonaws.com"));
-    const others = baseUrls.filter((u) => !u.includes("amazonaws.com"));
-    return amazon.length > 0 ? [...amazon, ...others] : baseUrls;
+    const region = this.resolveRegion(credentials);
+    const regional = region !== "us-east-1";
+
+    // Rewrite only the AWS-native hosts to the credential's region. The
+    // kiro.dev gateway is us-east-1 only, so it is left untouched.
+    const urls = regional
+      ? baseUrls.map((u) =>
+          u.includes("amazonaws.com") ? u.replace("us-east-1", region) : u,
+        )
+      : baseUrls;
+
+    // Prefer the *.amazonaws.com hosts first for api-key auth or any non-default
+    // region (the kiro.dev gateway only accepts us-east-1 OAuth/social tokens).
+    if (!isApiKey && !regional) return urls;
+    const amazon = urls.filter((u) => u.includes("amazonaws.com"));
+    const others = urls.filter((u) => !u.includes("amazonaws.com"));
+    return amazon.length > 0 ? [...amazon, ...others] : urls;
   }
 
   buildUrl(model, stream, urlIndex = 0, credentials = null) {

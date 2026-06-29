@@ -49,13 +49,28 @@ function stripSyntheticSuffixes(id) {
 }
 
 /**
- * Extract region from a profileArn like
+ * Resolve the region for catalog fetches. Prefer the explicit region stored on
+ * the connection (IDC persists its org region there), then fall back to the
+ * region embedded in the profileArn, then the default.
  *   arn:aws:codewhisperer:us-east-1:123456789012:profile/ABC
  */
 function regionFromProfileArn(profileArn) {
   if (!profileArn || typeof profileArn !== "string") return DEFAULT_REGION;
   const parts = profileArn.split(":");
   if (parts.length >= 4 && parts[3]) return parts[3];
+  return DEFAULT_REGION;
+}
+
+const REGION_RE = /^[a-z]{2}-[a-z]+-\d{1,2}$/;
+
+function resolveCatalogRegion(credentials) {
+  const psd = credentials?.providerSpecificData || {};
+  // Prefer the region embedded in the profileArn (where the Q resource lives);
+  // fall back to the login region (IdC home) only when no ARN is available.
+  const arnRegion = regionFromProfileArn(psd.profileArn);
+  if (arnRegion !== DEFAULT_REGION) return arnRegion;
+  const fromPsd = typeof psd.region === "string" ? psd.region.trim() : "";
+  if (REGION_RE.test(fromPsd)) return fromPsd;
   return DEFAULT_REGION;
 }
 
@@ -158,7 +173,7 @@ function formatDisplayName(modelName, modelId, rateMultiplier) {
  */
 async function fetchKiroCatalogRaw(credentials, signal) {
   const profileArn = credentials?.providerSpecificData?.profileArn || "";
-  const region = regionFromProfileArn(profileArn);
+  const region = resolveCatalogRegion(credentials);
   const params = new URLSearchParams();
   params.set("origin", "AI_EDITOR");
   if (profileArn) params.set("profileArn", profileArn);

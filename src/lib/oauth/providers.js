@@ -801,24 +801,35 @@ const PROVIDERS = {
       const deviceAuthUrl = `https://oidc.${region}.amazonaws.com/device_authorization`;
 
       // Step 1: Register client with AWS SSO OIDC
+      // issuerUrl binds the registered client to ONE specific Identity Center
+      // instance. Sending Kiro's shared instance for a user's own IdC makes
+      // device_authorization reject their start URL ("Invalid start url
+      // provided"). The standard AWS SSO device flow registers WITHOUT
+      // issuerUrl and lets the start URL resolve the instance, so for IDC we
+      // omit it. Builder ID keeps the configured issuerUrl.
+      const registerBody = {
+        clientName: config.clientName,
+        clientType: config.clientType,
+        scopes: config.scopes,
+        grantTypes: config.grantTypes,
+      };
+      if (authMethod !== "idc" && config.issuerUrl) {
+        registerBody.issuerUrl = config.issuerUrl;
+      }
       const registerRes = await fetch(registerClientUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Accept: "application/json",
         },
-        body: JSON.stringify({
-          clientName: config.clientName,
-          clientType: config.clientType,
-          scopes: config.scopes,
-          grantTypes: config.grantTypes,
-          issuerUrl: config.issuerUrl,
-        }),
+        body: JSON.stringify(registerBody),
       });
 
       if (!registerRes.ok) {
         const error = await registerRes.text();
-        throw new Error(`Client registration failed: ${error}`);
+        throw new Error(
+          `Client registration failed (region=${region}, endpoint=${registerClientUrl}): ${error}`,
+        );
       }
 
       const clientInfo = await registerRes.json();
@@ -839,7 +850,20 @@ const PROVIDERS = {
 
       if (!deviceRes.ok) {
         const error = await deviceRes.text();
-        throw new Error(`Device authorization failed: ${error}`);
+        // Surface the exact region/startUrl used. "Invalid start url provided"
+        // here means the start URL is not registered in THIS region — i.e. the
+        // region must be the Identity Center instance's home region, which can
+        // differ from the Q Developer profile region.
+        let hint = "";
+        if (/invalid start url/i.test(error) && authMethod === "idc") {
+          hint =
+            " — The AWS Region must be your Identity Center instance's HOME region" +
+            " (where the start URL was created), not your Q Developer profile region." +
+            " It is often us-east-1. The profile region is detected automatically after login.";
+        }
+        throw new Error(
+          `Device authorization failed [region=${region}, startUrl=${startUrl}, authMethod=${authMethod}]: ${error}${hint}`,
+        );
       }
 
       const deviceData = await deviceRes.json();
@@ -1360,9 +1384,13 @@ export async function pollForToken(providerName, deviceCode, codeVerifier, extra
         extra = await provider.postExchange(result.data);
       }
       const tokens = provider.mapTokens(result.data, extra);
-      // Kiro IDC/Builder-ID tokens lack profileArn; resolve it to avoid 403
+      // Kiro IDC/Builder-ID tokens lack profileArn; resolve it to avoid 403.
+      // Resolve in the connection's region (IDC profiles live in the org region).
       if (providerName === "kiro" && !tokens.providerSpecificData?.profileArn) {
-        const profileArn = await fetchKiroProfileArn(tokens.accessToken);
+        const profileArn = await fetchKiroProfileArn(
+          tokens.accessToken,
+          tokens.providerSpecificData?.region,
+        );
         if (profileArn) tokens.providerSpecificData.profileArn = profileArn;
       }
       return { success: true, tokens };
