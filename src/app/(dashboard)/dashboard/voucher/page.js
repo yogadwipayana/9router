@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Button, Card, ConfirmModal, Input, Modal, Skeleton } from "@/shared/components";
+import { Button, Card, ConfirmModal, Input, Modal, SegmentedControl, Select, Skeleton } from "@/shared/components";
 import { useHeaderSearchStore } from "@/store/headerSearchStore";
 import { useNotificationStore } from "@/store/notificationStore";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
@@ -21,16 +21,35 @@ function formatDate(value) {
   return new Date(value).toLocaleString();
 }
 
+const STATUS_OPTIONS = [
+  { value: "all", label: "All" },
+  { value: "active", label: "Active" },
+  { value: "redeemed", label: "Redeemed" },
+];
+
+const SORT_OPTIONS = [
+  { value: "newest", label: "Newest first" },
+  { value: "oldest", label: "Oldest first" },
+  { value: "amountHigh", label: "Amount: high to low" },
+  { value: "amountLow", label: "Amount: low to high" },
+];
+
 export default function VoucherPage() {
   const [vouchers, setVouchers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [amount, setAmount] = useState("");
+  const [quantity, setQuantity] = useState("1");
   const [note, setNote] = useState("");
+  const [createdCodes, setCreatedCodes] = useState([]);
   const [confirmState, setConfirmState] = useState(null);
   const [confirmLoading, setConfirmLoading] = useState(false);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [sortBy, setSortBy] = useState("newest");
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
 
+  const { copied, copy } = useCopyToClipboard(2000);
   const notifySuccess = useNotificationStore((s) => s.success);
   const notifyError = useNotificationStore((s) => s.error);
   const searchQuery = useHeaderSearchStore((s) => s.query);
@@ -62,13 +81,35 @@ export default function VoucherPage() {
 
   const filteredVouchers = useMemo(() => {
     const needle = searchQuery.trim().toLowerCase();
-    if (!needle) return vouchers;
-    return vouchers.filter((v) =>
-      v.code.toLowerCase().includes(needle) ||
-      (v.note || "").toLowerCase().includes(needle) ||
-      (v.redeemedBy || "").toLowerCase().includes(needle)
-    );
-  }, [vouchers, searchQuery]);
+    let list = vouchers;
+    if (needle) {
+      list = list.filter((v) =>
+        v.code.toLowerCase().includes(needle) ||
+        (v.note || "").toLowerCase().includes(needle) ||
+        (v.redeemedBy || "").toLowerCase().includes(needle)
+      );
+    }
+    if (statusFilter === "active") {
+      list = list.filter((v) => v.status !== "redeemed");
+    } else if (statusFilter === "redeemed") {
+      list = list.filter((v) => v.status === "redeemed");
+    }
+    const sorted = [...list];
+    sorted.sort((a, b) => {
+      switch (sortBy) {
+        case "oldest":
+          return new Date(a.createdAt) - new Date(b.createdAt);
+        case "amountHigh":
+          return Number(b.amountUsd) - Number(a.amountUsd);
+        case "amountLow":
+          return Number(a.amountUsd) - Number(b.amountUsd);
+        case "newest":
+        default:
+          return new Date(b.createdAt) - new Date(a.createdAt);
+      }
+    });
+    return sorted;
+  }, [vouchers, searchQuery, statusFilter, sortBy]);
 
   const summary = useMemo(() => {
     return vouchers.reduce((acc, v) => {
@@ -86,11 +127,19 @@ export default function VoucherPage() {
   const amountError = amount !== "" && (!Number.isFinite(amountValue) || amountValue <= 0)
     ? "Amount must be greater than zero"
     : "";
-  const canCreate = amount !== "" && Number.isFinite(amountValue) && amountValue > 0;
+  const quantityValue = Math.floor(Number(quantity));
+  const quantityError = quantity !== "" && (!Number.isFinite(quantityValue) || quantityValue < 1 || quantityValue > 100)
+    ? "Quantity must be between 1 and 100"
+    : "";
+  const canCreate =
+    amount !== "" && Number.isFinite(amountValue) && amountValue > 0 &&
+    quantity !== "" && Number.isFinite(quantityValue) && quantityValue >= 1 && quantityValue <= 100;
 
   const openCreate = () => {
     setAmount("");
+    setQuantity("1");
     setNote("");
+    setCreatedCodes([]);
     setCreateOpen(true);
   };
 
@@ -101,12 +150,17 @@ export default function VoucherPage() {
       const res = await fetch("/api/voucher", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amountUsd: amountValue, note: note.trim() || undefined }),
+        body: JSON.stringify({
+          amountUsd: amountValue,
+          count: quantityValue,
+          note: note.trim() || undefined,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to create voucher");
-      notifySuccess(`Voucher ${data.voucher.code} created`);
-      setCreateOpen(false);
+      const created = data.vouchers || [];
+      notifySuccess(created.length === 1 ? `Voucher ${created[0].code} created` : `${created.length} vouchers created`);
+      setCreatedCodes(created.map((v) => v.code));
       await loadVouchers();
     } catch (error) {
       notifyError(error.message || "Failed to create voucher");
@@ -130,6 +184,60 @@ export default function VoucherPage() {
           await loadVouchers();
         } catch (error) {
           notifyError(error.message || "Failed to delete voucher");
+        } finally {
+          setConfirmLoading(false);
+        }
+      },
+    });
+  };
+
+  const toggleSelect = (id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const visibleIds = useMemo(() => filteredVouchers.map((v) => v.id), [filteredVouchers]);
+  const selectedVisibleCount = visibleIds.filter((id) => selectedIds.has(id)).length;
+  const allVisibleSelected = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length;
+
+  const toggleSelectAll = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        visibleIds.forEach((id) => next.delete(id));
+      } else {
+        visibleIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const bulkDelete = () => {
+    const ids = visibleIds.filter((id) => selectedIds.has(id));
+    if (ids.length === 0) return;
+    setConfirmState({
+      title: "Delete Vouchers",
+      message: `Delete ${ids.length} selected voucher${ids.length === 1 ? "" : "s"}? This cannot be undone.`,
+      onConfirm: async () => {
+        setConfirmLoading(true);
+        try {
+          const res = await fetch("/api/voucher", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "Failed to delete vouchers");
+          notifySuccess(`${data.deleted} voucher${data.deleted === 1 ? "" : "s"} deleted`);
+          setConfirmState(null);
+          setSelectedIds(new Set());
+          await loadVouchers();
+        } catch (error) {
+          notifyError(error.message || "Failed to delete vouchers");
         } finally {
           setConfirmLoading(false);
         }
@@ -177,6 +285,22 @@ export default function VoucherPage() {
         </div>
       </div>
 
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <SegmentedControl
+          options={STATUS_OPTIONS}
+          value={statusFilter}
+          onChange={setStatusFilter}
+          size="sm"
+          className="w-full sm:w-auto"
+        />
+        <Select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value)}
+          options={SORT_OPTIONS}
+          className="w-full sm:w-auto sm:min-w-[200px]"
+        />
+      </div>
+
       <Card padding="none" className="overflow-hidden">
         {filteredVouchers.length === 0 ? (
           <div className="px-4 py-12 text-center">
@@ -185,57 +309,137 @@ export default function VoucherPage() {
             <p className="mt-1 text-xs text-text-muted">Create a voucher to hand out budget</p>
           </div>
         ) : (
-          <div className="divide-y divide-border-subtle">
-            {filteredVouchers.map((voucher) => (
-              <VoucherRow key={voucher.id} voucher={voucher} onDelete={deleteVoucher} />
-            ))}
-          </div>
+          <>
+            <div className="flex items-center justify-between gap-3 border-b border-border-subtle px-4 py-2.5">
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-text-muted">
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  onChange={toggleSelectAll}
+                  className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                />
+                {selectedVisibleCount > 0 ? `${selectedVisibleCount} selected` : "Select all"}
+              </label>
+              {selectedVisibleCount > 0 && (
+                <Button variant="danger" size="sm" icon="delete" onClick={bulkDelete}>
+                  Delete selected
+                </Button>
+              )}
+            </div>
+            <div className="divide-y divide-border-subtle">
+              {filteredVouchers.map((voucher) => (
+                <VoucherRow
+                  key={voucher.id}
+                  voucher={voucher}
+                  onDelete={deleteVoucher}
+                  selected={selectedIds.has(voucher.id)}
+                  onToggleSelect={toggleSelect}
+                />
+              ))}
+            </div>
+          </>
         )}
       </Card>
 
       <Modal isOpen={createOpen} title="Create Voucher" onClose={() => setCreateOpen(false)}>
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1.5">
-            <label className="text-sm font-medium text-text-main">
-              Amount <span className="ml-1 text-red-500">*</span>
-            </label>
-            <div className="relative">
-              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-sm text-text-muted">$</span>
+        {createdCodes.length > 0 ? (
+          <div className="flex flex-col gap-4">
+            <div className="flex items-center gap-2 rounded-[10px] border border-green-500/30 bg-green-500/10 px-3 py-2.5">
+              <span className="material-symbols-outlined shrink-0 text-[18px] text-green-500">check_circle</span>
+              <p className="text-sm text-text-main">
+                {createdCodes.length === 1 ? "1 voucher created" : `${createdCodes.length} vouchers created`}
+              </p>
+            </div>
+            <textarea
+              readOnly
+              value={createdCodes.join("\n")}
+              rows={Math.min(createdCodes.length, 10)}
+              onFocus={(e) => e.target.select()}
+              className="w-full resize-none rounded-[10px] border border-transparent bg-surface-2 px-3 py-2.5 font-mono text-sm text-text-main focus:border-brand-500/40 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+            />
+            <div className="flex gap-2">
+              <Button
+                onClick={() => copy(createdCodes.join("\n"), "bulk")}
+                fullWidth
+                icon={copied === "bulk" ? "check" : "content_copy"}
+              >
+                {copied === "bulk" ? "Copied" : "Copy all codes"}
+              </Button>
+              <Button onClick={() => setCreateOpen(false)} variant="ghost" fullWidth>
+                Done
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-text-main">
+                Amount <span className="ml-1 text-red-500">*</span>
+              </label>
+              <div className="relative">
+                <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-sm text-text-muted">$</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  placeholder="10.00"
+                  className={cn(
+                    "w-full rounded-[10px] border border-transparent bg-surface-2 py-2.5 pl-7 pr-3 text-[16px] text-text-main transition-all placeholder-text-muted/70 focus:border-brand-500/40 focus:outline-none focus:ring-2 focus:ring-brand-500/30 sm:text-sm",
+                    amountError && "border-red-500/40 ring-1 ring-red-500 focus:ring-red-500/40"
+                  )}
+                />
+              </div>
+              {amountError && (
+                <p className="flex items-center gap-1 text-xs text-red-500">
+                  <span className="material-symbols-outlined text-[14px]">error</span>
+                  {amountError}
+                </p>
+              )}
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-text-main">
+                Quantity <span className="ml-1 text-red-500">*</span>
+              </label>
               <input
                 type="number"
-                min="0"
+                min="1"
+                max="100"
                 step="1"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                placeholder="10.00"
+                value={quantity}
+                onChange={(e) => setQuantity(e.target.value)}
+                placeholder="1"
                 className={cn(
-                  "w-full rounded-[10px] border border-transparent bg-surface-2 py-2.5 pl-7 pr-3 text-[16px] text-text-main transition-all placeholder-text-muted/70 focus:border-brand-500/40 focus:outline-none focus:ring-2 focus:ring-brand-500/30 sm:text-sm",
-                  amountError && "border-red-500/40 ring-1 ring-red-500 focus:ring-red-500/40"
+                  "w-full rounded-[10px] border border-transparent bg-surface-2 py-2.5 px-3 text-[16px] text-text-main transition-all placeholder-text-muted/70 focus:border-brand-500/40 focus:outline-none focus:ring-2 focus:ring-brand-500/30 sm:text-sm",
+                  quantityError && "border-red-500/40 ring-1 ring-red-500 focus:ring-red-500/40"
                 )}
               />
+              {quantityError ? (
+                <p className="flex items-center gap-1 text-xs text-red-500">
+                  <span className="material-symbols-outlined text-[14px]">error</span>
+                  {quantityError}
+                </p>
+              ) : (
+                <p className="text-xs text-text-muted">Create up to 100 vouchers at once.</p>
+              )}
             </div>
-            {amountError && (
-              <p className="flex items-center gap-1 text-xs text-red-500">
-                <span className="material-symbols-outlined text-[14px]">error</span>
-                {amountError}
-              </p>
-            )}
+            <Input
+              label="Note (optional)"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Promo campaign, gift, etc."
+            />
+            <div className="flex gap-2">
+              <Button onClick={createVoucher} fullWidth disabled={!canCreate} loading={saving} icon="add">
+                Create
+              </Button>
+              <Button onClick={() => setCreateOpen(false)} variant="ghost" fullWidth>
+                Cancel
+              </Button>
+            </div>
           </div>
-          <Input
-            label="Note (optional)"
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            placeholder="Promo campaign, gift, etc."
-          />
-          <div className="flex gap-2">
-            <Button onClick={createVoucher} fullWidth disabled={!canCreate} loading={saving} icon="add">
-              Create
-            </Button>
-            <Button onClick={() => setCreateOpen(false)} variant="ghost" fullWidth>
-              Cancel
-            </Button>
-          </div>
-        </div>
+        )}
       </Modal>
 
       <ConfirmModal
@@ -268,14 +472,21 @@ function SummaryCard({ icon, label, value }) {
   );
 }
 
-function VoucherRow({ voucher, onDelete }) {
+function VoucherRow({ voucher, onDelete, selected, onToggleSelect }) {
   const { copied, copy } = useCopyToClipboard(2000);
   const isRedeemed = voucher.status === "redeemed";
 
   return (
-    <div className="group px-4 py-3 transition-colors hover:bg-surface-2/30">
+    <div className={cn("group px-4 py-3 transition-colors hover:bg-surface-2/30", selected && "bg-surface-2/40")}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-center gap-3">
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={() => onToggleSelect(voucher.id)}
+            aria-label={`Select voucher ${voucher.code}`}
+            className="h-4 w-4 shrink-0 rounded border-gray-300 text-primary focus:ring-primary"
+          />
           <button
             type="button"
             onClick={() => copy(voucher.code)}

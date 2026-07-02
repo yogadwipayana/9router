@@ -101,6 +101,14 @@ export async function deleteVoucher(id) {
   return res.count > 0;
 }
 
+export async function deleteVouchers(ids) {
+  assertPostgres();
+  const list = Array.isArray(ids) ? ids.filter((id) => typeof id === "string" && id) : [];
+  if (list.length === 0) return 0;
+  const res = await getPrisma().voucher.deleteMany({ where: { id: { in: list } } });
+  return res.count;
+}
+
 export async function redeemVoucher(code, email) {
   assertPostgres();
   const normalizedCode = normalizeCode(code);

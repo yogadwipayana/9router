@@ -98,6 +98,13 @@ npm run prisma:studio     # prisma studio
 
 Untuk target database tertentu (mis. branch), override `DATABASE_URL` di depan perintah seperti pada langkah di atas.
 
+1. step to add voucher table
+npx prisma migrate resolve --applied 20260604000000_add_enabled_models
+
+$env:DATABASE_URL="postgresql://postgres.ftoodtlxohlczkzqxoys:[PASS]@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres"; npx prisma migrate deploy
+
+NOTE:
+
 $env:DATABASE_URL="postgresql://postgres.ftoodtlxohlczkzqxoys:[PASS]@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres"; npx prisma migrate deploy
 
 node -r dotenv/config scripts/import-backup.mjs "C:\Users\YOGA\Documents\architecture\backup.sql"

@@ -46,7 +46,7 @@ export {
 
 // Vouchers
 export {
-  getVouchers, getVoucherByCode, createVoucher, deleteVoucher, redeemVoucher,
+  getVouchers, getVoucherByCode, createVoucher, deleteVoucher, deleteVouchers, redeemVoucher,
 } from "./repos/vouchersRepo.js";
 
 // Aliases (model + custom + mitm)

@@ -49,6 +49,15 @@ components:
         API key passed as `Authorization: Bearer <key>`.
         Only enforced when `requireApiKey` is enabled in settings.
         When disabled, the header is accepted but not validated.
+    AdminBearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Admin API key for admin-only endpoints. Passed as
+        `Authorization: Bearer <key>` or the `x-admin-api-key` header.
+        Validated against the `ADMIN_API_KEY` environment variable.
+        Always required — admin endpoints return 503 if `ADMIN_API_KEY`
+        is not configured on the server.
 
   responses:
     BadRequest:
@@ -742,6 +751,90 @@ components:
           type: integer
       additionalProperties: true
 
+    VoucherObject:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          description: Voucher code in `V-XXXX-XXXX-XXXX` format.
+          example: V-ABCD-2345-EFGH
+        amountUsd:
+          type: number
+          description: Voucher value in USD credited to the redeeming user's budget.
+        status:
+          type: string
+          enum: [active, redeemed]
+        redeemedBy:
+          type: string
+          nullable: true
+          description: Email of the user who redeemed the voucher.
+        redeemedAt:
+          type: string
+          nullable: true
+          description: ISO-8601 timestamp of redemption.
+        note:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    OwnerBudgetState:
+      type: object
+      properties:
+        email:
+          type: string
+        budgetUsd:
+          type: number
+          nullable: true
+        spentUsd:
+          type: number
+        remainingUsd:
+          type: number
+          nullable: true
+        keyCount:
+          type: integer
+        requestCount:
+          type: integer
+        isActive:
+          type: boolean
+        configured:
+          type: boolean
+        createdAt:
+          type: string
+          nullable: true
+        updatedAt:
+          type: string
+          nullable: true
+
+    RedeemVoucherRequest:
+      type: object
+      required:
+        - email
+        - code
+      properties:
+        email:
+          type: string
+          format: email
+          description: Email of the user whose budget will be credited. Must match an existing owner user.
+          example: user@example.com
+        code:
+          type: string
+          description: Voucher code to redeem (case-insensitive).
+          example: V-ABCD-2345-EFGH
+
+    RedeemVoucherResponse:
+      type: object
+      properties:
+        user:
+          $ref: '#/components/schemas/OwnerBudgetState'
+        voucher:
+          $ref: '#/components/schemas/VoucherObject'
+
 security:
   - BearerAuth: []
   - {}
@@ -767,6 +860,8 @@ tags:
     description: Web URL fetch/extraction endpoints.
   - name: Compatibility
     description: Gemini API compatibility and Ollama-compatible endpoints.
+  - name: Admin
+    description: Admin-only endpoints. Require the admin API key (ADMIN_API_KEY).
 
 paths:
 
@@ -1777,6 +1872,67 @@ paths:
           $ref: '#/components/responses/BadRequest'
         "500":
           description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── Admin ────────────────────────────────────────────────────────────────────
+
+  /v1/admin/voucher:
+    post:
+      tags: [Admin]
+      summary: Redeem a voucher on behalf of a user
+      description: |
+        Redeems a voucher code and credits its USD value to the specified user's
+        budget. Admin-only — requires the admin API key.
+
+        The `email` must match an existing owner user. Redemption is atomic:
+        a voucher can only be claimed once, and concurrent redeem attempts for
+        the same code are guarded against double-redeem.
+
+        **Authentication:** Always required. Pass the admin key as
+        `Authorization: Bearer <key>` or the `x-admin-api-key` header.
+      security:
+        - AdminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedeemVoucherRequest'
+            example:
+              email: user@example.com
+              code: V-ABCD-2345-EFGH
+      responses:
+        "200":
+          description: Voucher redeemed; returns updated user budget and voucher.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RedeemVoucherResponse'
+        "400":
+          description: >
+            Invalid request — missing/invalid email, missing voucher code,
+            voucher not found, or voucher already redeemed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid admin API key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: User budget not found for the given email.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: Admin API key is not configured on the server.
           content:
             application/json:
               schema:

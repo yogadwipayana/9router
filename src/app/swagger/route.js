@@ -33,7 +33,7 @@ const html = `<!doctype html>
     <script>
       window.addEventListener("load", function () {
         window.ui = SwaggerUIBundle({
-          url: "/openapi.json",
+          url: "/API.yaml",
           dom_id: "#swagger-ui",
           deepLinking: true,
           persistAuthorization: true,

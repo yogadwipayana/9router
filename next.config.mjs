@@ -22,6 +22,9 @@ const nextConfig = {
   outputFileTracingExcludes: {
     "*": ["./gitbook/**/*"]
   },
+  outputFileTracingIncludes: {
+    "/API.yaml": ["./docs/API.yaml"]
+  },
   images: {
     unoptimized: true
   },
