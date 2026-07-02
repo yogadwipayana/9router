@@ -98,4 +98,6 @@ npm run prisma:studio     # prisma studio
 
 Untuk target database tertentu (mis. branch), override `DATABASE_URL` di depan perintah seperti pada langkah di atas.
 
-$env:DATABASE_URL="postgresql://postgres.project_ref:password@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres"; npx prisma migrate deploy
+$env:DATABASE_URL="postgresql://postgres.ftoodtlxohlczkzqxoys:[PASS]@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres"; npx prisma migrate deploy
+
+node -r dotenv/config scripts/import-backup.mjs "C:\Users\YOGA\Documents\architecture\backup.sql"
