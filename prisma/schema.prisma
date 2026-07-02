@@ -94,3 +94,18 @@ model Pricing {
   @@index([providerAlias], map: "idx_pricing_provider")
   @@map("pricing")
 }
+
+model Voucher {
+  id         String  @id
+  code       String  @unique
+  amountUsd  Float
+  status     String  @default("active")
+  redeemedBy String?
+  redeemedAt String?
+  note       String?
+  createdAt  String
+  updatedAt  String
+
+  @@index([status], map: "idx_voucher_status")
+  @@map("vouchers")
+}

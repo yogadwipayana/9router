@@ -49,6 +49,8 @@ export default function UsersPage() {
   const [confirmLoading, setConfirmLoading] = useState(false);
   const [topUpState, setTopUpState] = useState(null);
   const [topUpAmount, setTopUpAmount] = useState("");
+  const [redeemState, setRedeemState] = useState(null);
+  const [redeemCode, setRedeemCode] = useState("");
   const [form, setForm] = useState({ email: "", budgetUsd: "", isActive: true });
 
   const notifySuccess = useNotificationStore((s) => s.success);
@@ -129,6 +131,16 @@ export default function UsersPage() {
     setTopUpAmount("");
   };
 
+  const openRedeemModal = (user) => {
+    setRedeemCode("");
+    setRedeemState(user);
+  };
+
+  const closeRedeemModal = () => {
+    setRedeemState(null);
+    setRedeemCode("");
+  };
+
   const formEmail = form.email.trim().toLowerCase();
   const budgetValue = Number(form.budgetUsd);
   const emailError = form.email && !EMAIL_PATTERN.test(formEmail) ? "Enter a valid email address" : "";
@@ -141,6 +153,7 @@ export default function UsersPage() {
     ? "Amount must be greater than zero"
     : "";
   const canTopUp = !!topUpState && topUpAmount !== "" && Number.isFinite(topUpValue) && topUpValue > 0;
+  const canRedeem = !!redeemState && redeemCode.trim() !== "";
 
   const saveUser = async () => {
     if (!canSave) return;
@@ -204,6 +217,27 @@ export default function UsersPage() {
       await loadUsers();
     } catch (error) {
       notifyError(error.message || "Failed to add budget");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const redeemVoucher = async () => {
+    if (!canRedeem || !redeemState) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/users/${encodeURIComponent(redeemState.email)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "redeem-voucher", code: redeemCode.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to redeem voucher");
+      notifySuccess(`Added ${formatUsd(data.voucher?.amountUsd || 0)} to ${redeemState.email}`);
+      closeRedeemModal();
+      await loadUsers();
+    } catch (error) {
+      notifyError(error.message || "Failed to redeem voucher");
     } finally {
       setSaving(false);
     }
@@ -319,6 +353,7 @@ export default function UsersPage() {
                 user={user}
                 onEdit={openEditModal}
                 onTopUp={openTopUpModal}
+                onRedeem={openRedeemModal}
                 onResetUsage={resetUserUsage}
                 onToggle={toggleUser}
                 onRemove={removeUserLimit}
@@ -401,6 +436,36 @@ export default function UsersPage() {
         </div>
       </Modal>
 
+      <Modal
+        isOpen={!!redeemState}
+        title="Redeem Voucher"
+        onClose={closeRedeemModal}
+      >
+        <div className="flex flex-col gap-4">
+          {redeemState && (
+            <p className="text-sm text-text-muted">
+              Redeem a voucher code to add its value to{" "}
+              <span className="font-medium text-text-main">{redeemState.email}</span>.
+            </p>
+          )}
+          <Input
+            label="Voucher Code"
+            value={redeemCode}
+            onChange={(e) => setRedeemCode(e.target.value)}
+            placeholder="V-XXXX-XXXX-XXXX"
+            required
+          />
+          <div className="flex gap-2">
+            <Button onClick={redeemVoucher} fullWidth disabled={!canRedeem} loading={saving} icon="redeem">
+              Redeem
+            </Button>
+            <Button onClick={closeRedeemModal} variant="ghost" fullWidth>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
       <ConfirmModal
         isOpen={!!confirmState}
         onClose={() => setConfirmState(null)}
@@ -431,7 +496,7 @@ function SummaryCard({ icon, label, value }) {
   );
 }
 
-function UserRow({ user, onEdit, onTopUp, onResetUsage, onToggle, onRemove }) {
+function UserRow({ user, onEdit, onTopUp, onRedeem, onResetUsage, onToggle, onRemove }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
   const menuRef = useRef(null);
@@ -454,6 +519,11 @@ function UserRow({ user, onEdit, onTopUp, onResetUsage, onToggle, onRemove }) {
       label: "Add budget",
       disabled: !user.configured,
       onSelect: () => onTopUp(user),
+    },
+    {
+      label: "Redeem voucher",
+      disabled: !user.configured,
+      onSelect: () => onRedeem(user),
     },
     {
       label: "Reset usage",

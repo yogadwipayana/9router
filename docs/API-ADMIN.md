@@ -83,6 +83,7 @@ https://your-9router-host/v1/admin/users
 | GET | `/v1/admin/pricing` | Get pricing config |
 | PATCH | `/v1/admin/pricing` | Update pricing config |
 | DELETE | `/v1/admin/pricing` | Reset pricing (all / per-provider / per-model) |
+| POST | `/v1/admin/voucher` | Redeem voucher code → add budget ke user |
 
 ---
 
@@ -736,6 +737,80 @@ Pricing config setelah reset (shape sama seperti GET).
 | Status | Body |
 |---|---|
 | `500` | `{ "error": "Failed to reset pricing" }` |
+
+---
+
+## Voucher
+
+Voucher adalah kode sekali-pakai dengan nominal USD tetap. Redeem sebuah kode akan menambahkan
+nilainya ke budget user (`ownerUsers`). Voucher dibuat & dikelola dari dashboard admin
+(`/dashboard/voucher`); endpoint ini khusus untuk **redeem** dari aplikasi external.
+
+### `POST /v1/admin/voucher`
+
+Redeem voucher untuk satu user. Target user **harus sudah punya record budget** (`configured`);
+kalau belum ada, redeem ditolak.
+
+**Request body**
+
+```json
+{ "code": "V-XXXX-XXXX-XXXX", "email": "user@example.com" }
+```
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `code` | string | yes | Case-insensitive, di-trim + uppercase sebelum lookup |
+| `email` | string | yes | Di-lowercase + trim. Harus match `/^[^\s@]+@[^\s@]+\.[^\s@]+$/`. Boleh URL-encoded. |
+
+**Response 200**
+
+Balas state user setelah budget ditambah, plus voucher yang sudah redeemed.
+
+```json
+{
+  "user": {
+    "email": "user@example.com",
+    "budgetUsd": 35,
+    "spentUsd": 3.21,
+    "remainingUsd": 31.79,
+    "isActive": true,
+    "configured": true
+  },
+  "voucher": {
+    "id": "uuid",
+    "code": "V-XXXX-XXXX-XXXX",
+    "amountUsd": 10,
+    "status": "redeemed",
+    "redeemedBy": "user@example.com",
+    "redeemedAt": "2026-07-02T04:00:00.000Z",
+    "note": null,
+    "createdAt": "2026-07-01T00:00:00.000Z",
+    "updatedAt": "2026-07-02T04:00:00.000Z"
+  }
+}
+```
+
+**Errors**
+
+| Status | Body | Kapan |
+|---|---|---|
+| `400` | `{ "error": "Valid email is required" }` | Email kosong / format salah |
+| `400` | `{ "error": "Voucher code is required" }` | `code` kosong / bukan string |
+| `400` | `{ "error": "Voucher not found" }` | Kode tidak ada |
+| `400` | `{ "error": "Voucher already redeemed" }` | Kode sudah dipakai |
+| `404` | `{ "error": "User budget not found" }` | Email belum punya record budget di `ownerUsers` |
+| `401` | `{ "error": "Missing API key" }` / `{ "error": "Invalid admin API key" }` | Auth gagal |
+| `503` | `{ "error": "Admin API key is not configured" }` | `ADMIN_API_KEY` belum diset |
+
+**Contoh cURL**
+
+```bash
+curl https://your-9router/v1/admin/voucher \
+  -X POST \
+  -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"code":"V-XXXX-XXXX-XXXX","email":"user@example.com"}'
+```
 
 ---
 

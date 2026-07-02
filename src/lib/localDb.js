@@ -15,6 +15,7 @@ export {
   getOwnerUsers, getOwnerUserByEmail, upsertOwnerUser, addOwnerBudget, deleteOwnerUser, getOwnerBudgetState,
   getCombos, getComboById, getComboByName,
   createCombo, updateCombo, deleteCombo,
+  getVouchers, getVoucherByCode, createVoucher, deleteVoucher, redeemVoucher,
   getModelAliases, setModelAlias, deleteModelAlias,
   getCustomModels, addCustomModel, deleteCustomModel,
   getMitmAlias, setMitmAliasAll,

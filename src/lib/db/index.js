@@ -44,6 +44,11 @@ export {
   createCombo, updateCombo, deleteCombo,
 } from "./repos/combosRepo.js";
 
+// Vouchers
+export {
+  getVouchers, getVoucherByCode, createVoucher, deleteVoucher, redeemVoucher,
+} from "./repos/vouchersRepo.js";
+
 // Aliases (model + custom + mitm)
 export {
   getModelAliases, setModelAlias, deleteModelAlias,

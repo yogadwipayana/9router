@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { addOwnerBudget, deleteOwnerUser, getOwnerBudgetState, upsertOwnerUser } from "@/lib/localDb";
+import { addOwnerBudget, deleteOwnerUser, getOwnerBudgetState, redeemVoucher, upsertOwnerUser } from "@/lib/localDb";
 import { resetUsageForOwner } from "@/lib/usageDb";
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -72,10 +72,17 @@ export async function POST(request, { params }) {
       return NextResponse.json({ user, reset });
     }
 
+    if (body.action === "redeem-voucher") {
+      const { user, voucher } = await redeemVoucher(body.code, email);
+      return NextResponse.json({ user, voucher });
+    }
+
     return NextResponse.json({ error: "Unsupported user action" }, { status: 400 });
   } catch (error) {
     console.error("Error applying user action:", error);
-    const status = error.message === "User budget not found" ? 404 : 500;
+    const status = error.message === "User budget not found" ? 404
+      : (error.message === "Voucher not found" || error.message === "Voucher already redeemed") ? 400
+      : 500;
     return NextResponse.json({ error: error.message || "Failed to update user" }, { status });
   }
 }

@@ -13,23 +13,8 @@ if (!connectionString) {
   process.exit(1);
 }
 
-let sql = readFileSync(sqlPath, "utf8");
+const sql = readFileSync(sqlPath, "utf8");
 console.log(`Loaded ${sqlPath} (${sql.length} bytes)`);
-
-// The backup references "usageHistory_id_seq" as a column default but never
-// creates it, and its own `DROP TABLE ... CASCADE` removes the SERIAL-owned
-// sequence. Recreate the sequence after the drop, then re-own and reset it.
-const dropLine = 'DROP TABLE IF EXISTS "public"."usageHistory" CASCADE;';
-sql = sql.replace(
-  dropLine,
-  `${dropLine}\nCREATE SEQUENCE IF NOT EXISTS "public"."usageHistory_id_seq";`
-);
-sql = sql.replace(
-  /COMMIT;\s*$/,
-  `ALTER SEQUENCE "public"."usageHistory_id_seq" OWNED BY "public"."usageHistory"."id";\n` +
-    `SELECT setval('"public"."usageHistory_id_seq"', COALESCE((SELECT MAX("id") FROM "public"."usageHistory"), 1));\n` +
-    `COMMIT;`
-);
 
 const client = new pg.Client({ connectionString });
 
