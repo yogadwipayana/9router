@@ -155,10 +155,19 @@ function sortData(dataMap, pendingMap = {}, sortBy, sortOrder) {
       const totalTokens =
         (data.promptTokens || 0) + (data.completionTokens || 0);
       const totalCost = data.cost || 0;
+      // ponytail: cost split is a token-share allocation of the (rate-accurate)
+      // server total, not a per-rate recompute. cached is a subset of prompt, so
+      // peel it out of the input share. Upgrade to a stored per-component cost
+      // breakdown if exact cached-rate cost display is needed.
+      const cachedTokens = data.cachedTokens || 0;
+      const nonCachedInput = Math.max(
+        0,
+        (data.promptTokens || 0) - cachedTokens,
+      );
       const inputCost =
-        totalTokens > 0
-          ? (data.promptTokens || 0) * (totalCost / totalTokens)
-          : 0;
+        totalTokens > 0 ? nonCachedInput * (totalCost / totalTokens) : 0;
+      const cachedCost =
+        totalTokens > 0 ? cachedTokens * (totalCost / totalTokens) : 0;
       const outputCost =
         totalTokens > 0
           ? (data.completionTokens || 0) * (totalCost / totalTokens)
@@ -169,6 +178,7 @@ function sortData(dataMap, pendingMap = {}, sortBy, sortOrder) {
         totalTokens,
         totalCost,
         inputCost,
+        cachedCost,
         outputCost,
         pending: pendingMap[key] || 0,
       };
@@ -215,9 +225,11 @@ function groupDataByKey(data, keyField) {
           requests: 0,
           promptTokens: 0,
           completionTokens: 0,
+          cachedTokens: 0,
           totalTokens: 0,
           cost: 0,
           inputCost: 0,
+          cachedCost: 0,
           outputCost: 0,
           lastUsed: null,
           pending: 0,
@@ -229,9 +241,11 @@ function groupDataByKey(data, keyField) {
     s.requests += item.requests || 0;
     s.promptTokens += item.promptTokens || 0;
     s.completionTokens += item.completionTokens || 0;
+    s.cachedTokens += item.cachedTokens || 0;
     s.totalTokens += item.totalTokens || 0;
     s.cost += item.cost || 0;
     s.inputCost += item.inputCost || 0;
+    s.cachedCost += item.cachedCost || 0;
     s.outputCost += item.outputCost || 0;
     s.pending += item.pending || 0;
     if (
