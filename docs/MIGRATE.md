@@ -108,3 +108,8 @@ NOTE:
 $env:DATABASE_URL="postgresql://postgres.ftoodtlxohlczkzqxoys:[PASS]@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres"; npx prisma migrate deploy
 
 node -r dotenv/config scripts/import-backup.mjs "C:\Users\YOGA\Documents\architecture\backup.sql"
+
+supabase-db:
+  image: 'supabase/postgres:15.8.1.085'
+  ports:
+    - '5432:5432'

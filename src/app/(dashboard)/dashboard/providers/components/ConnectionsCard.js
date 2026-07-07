@@ -4,6 +4,10 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
 import PropTypes from "prop-types";
 import { Card, Badge, Button, Modal, Select, Toggle, EditConnectionModal, ConfirmModal } from "@/shared/components";
+import Pagination from "@/shared/components/Pagination";
+import { cn } from "@/shared/utils/cn";
+
+const CONNECTIONS_PER_PAGE = 10;
 
 // ── CooldownTimer ──────────────────────────────────────────────
 function CooldownTimer({ until }) {
@@ -305,6 +309,7 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
   const [providerStrategy, setProviderStrategy] = useState(null);
   const [providerStickyLimit, setProviderStickyLimit] = useState("1");
   const [confirmState, setConfirmState] = useState(null);
+  const [page, setPage] = useState(1);
 
   const fetch_ = useCallback(async () => {
     try {
@@ -396,6 +401,11 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
     } catch (e) { console.log("update connection error:", e); }
   };
 
+  const totalPages = Math.max(1, Math.ceil(connections.length / CONNECTIONS_PER_PAGE));
+  const safePage = Math.min(page, totalPages);
+  const pageStart = (safePage - 1) * CONNECTIONS_PER_PAGE;
+  const pagedConnections = connections.slice(pageStart, pageStart + CONNECTIONS_PER_PAGE);
+
   if (loading) return <Card><div className="h-20 animate-pulse bg-black/5 rounded-lg" /></Card>;
 
   return (
@@ -434,24 +444,33 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
           </div>
         ) : (
           <>
-            <div className="flex flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03]">
-              {connections.map((conn, idx) => (
-                <ConnectionRow
-                  key={conn.id}
-                  connection={conn}
-                  proxyPools={proxyPools}
-                  isOAuth={isOAuth}
-                  isFirst={idx === 0}
-                  isLast={idx === connections.length - 1}
-                  onMoveUp={() => handleSwapPriority(idx, idx - 1)}
-                  onMoveDown={() => handleSwapPriority(idx, idx + 1)}
-                  onToggleActive={(isActive) => handleToggleActive(conn.id, isActive)}
-                  onUpdateProxy={(poolId) => handleUpdateProxy(conn.id, poolId)}
-                  onEdit={() => { setSelectedConnection(conn); setShowEditModal(true); }}
-                  onDelete={() => handleDelete(conn.id)}
-                />
-              ))}
+            <div className={cn("flex flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03]", totalPages > 1 && "md:min-h-[600px]")}>
+              {pagedConnections.map((conn, idx) => {
+                const globalIdx = pageStart + idx;
+                return (
+                  <ConnectionRow
+                    key={conn.id}
+                    connection={conn}
+                    proxyPools={proxyPools}
+                    isOAuth={isOAuth}
+                    isFirst={globalIdx === 0}
+                    isLast={globalIdx === connections.length - 1}
+                    onMoveUp={() => handleSwapPriority(globalIdx, globalIdx - 1)}
+                    onMoveDown={() => handleSwapPriority(globalIdx, globalIdx + 1)}
+                    onToggleActive={(isActive) => handleToggleActive(conn.id, isActive)}
+                    onUpdateProxy={(poolId) => handleUpdateProxy(conn.id, poolId)}
+                    onEdit={() => { setSelectedConnection(conn); setShowEditModal(true); }}
+                    onDelete={() => handleDelete(conn.id)}
+                  />
+                );
+              })}
             </div>
+            <Pagination
+              currentPage={safePage}
+              pageSize={CONNECTIONS_PER_PAGE}
+              totalItems={connections.length}
+              onPageChange={setPage}
+            />
             <div className="mt-4 flex justify-stretch sm:justify-start">
               <Button size="sm" icon="add" onClick={() => setShowAddModal(true)}>Add</Button>
             </div>

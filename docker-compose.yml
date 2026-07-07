@@ -1,17 +1,17 @@
 services:
   9router:
-    image: decolua/9router:latest
+    build: .
     container_name: 9router
     restart: always
     ports:
-      - "20128:20128"
+      - "4000:4000"
     volumes:
       - 9router-data:/app/data
     env_file:
       - .env
     environment:
       DATA_DIR: /app/data
-      PORT: "20128"
+      PORT: "4000"
       HOSTNAME: "0.0.0.0"
       NODE_ENV: production
       HEADROOM_URL: http://headroom:8787

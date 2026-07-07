@@ -2,10 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, Card, ConfirmModal, Input, Modal, SegmentedControl, Select, Skeleton } from "@/shared/components";
+import Pagination from "@/shared/components/Pagination";
 import { useHeaderSearchStore } from "@/store/headerSearchStore";
 import { useNotificationStore } from "@/store/notificationStore";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { cn } from "@/shared/utils/cn";
+
+const VOUCHERS_PER_PAGE = 10;
 
 function formatUsd(value) {
   return new Intl.NumberFormat("en-US", {
@@ -48,6 +51,7 @@ export default function VoucherPage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [sortBy, setSortBy] = useState("newest");
   const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [page, setPage] = useState(1);
 
   const { copied, copy } = useCopyToClipboard(2000);
   const notifySuccess = useNotificationStore((s) => s.success);
@@ -110,6 +114,15 @@ export default function VoucherPage() {
     });
     return sorted;
   }, [vouchers, searchQuery, statusFilter, sortBy]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredVouchers.length / VOUCHERS_PER_PAGE));
+  const safePage = Math.min(page, totalPages);
+  const pageStart = (safePage - 1) * VOUCHERS_PER_PAGE;
+  const pagedVouchers = filteredVouchers.slice(pageStart, pageStart + VOUCHERS_PER_PAGE);
+
+  useEffect(() => {
+    setPage(1);
+  }, [searchQuery, statusFilter, sortBy]);
 
   const summary = useMemo(() => {
     return vouchers.reduce((acc, v) => {
@@ -200,7 +213,7 @@ export default function VoucherPage() {
     });
   };
 
-  const visibleIds = useMemo(() => filteredVouchers.map((v) => v.id), [filteredVouchers]);
+  const visibleIds = useMemo(() => pagedVouchers.map((v) => v.id), [pagedVouchers]);
   const selectedVisibleCount = visibleIds.filter((id) => selectedIds.has(id)).length;
   const allVisibleSelected = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length;
 
@@ -326,8 +339,8 @@ export default function VoucherPage() {
                 </Button>
               )}
             </div>
-            <div className="divide-y divide-border-subtle">
-              {filteredVouchers.map((voucher) => (
+            <div className={cn("divide-y divide-border-subtle", totalPages > 1 && "md:min-h-[589px]")}>
+              {pagedVouchers.map((voucher) => (
                 <VoucherRow
                   key={voucher.id}
                   voucher={voucher}
@@ -340,6 +353,13 @@ export default function VoucherPage() {
           </>
         )}
       </Card>
+
+      <Pagination
+        currentPage={safePage}
+        pageSize={VOUCHERS_PER_PAGE}
+        totalItems={filteredVouchers.length}
+        onPageChange={setPage}
+      />
 
       <Modal isOpen={createOpen} title="Create Voucher" onClose={() => setCreateOpen(false)}>
         {createdCodes.length > 0 ? (

@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Card, ConfirmModal, Input, Modal, Skeleton, Toggle } from "@/shared/components";
+import Pagination from "@/shared/components/Pagination";
 import { useHeaderSearchStore } from "@/store/headerSearchStore";
 import { useNotificationStore } from "@/store/notificationStore";
 import { cn } from "@/shared/utils/cn";
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const USERS_PER_PAGE = 10;
 const USER_TABLE_COLUMNS = "md:grid-cols-[minmax(0,1fr)_5.75rem_5.75rem_3.5rem_6rem_4rem] xl:grid-cols-[minmax(20rem,1fr)_6.25rem_6.25rem_4rem_6.5rem_4rem] 2xl:grid-cols-[minmax(32rem,1fr)_6.5rem_6.5rem_4.5rem_6.5rem_4rem]";
 const ACTION_MENU_WIDTH = 176;
 
@@ -51,18 +53,24 @@ export default function UsersPage() {
   const [topUpAmount, setTopUpAmount] = useState("");
   const [redeemState, setRedeemState] = useState(null);
   const [redeemCode, setRedeemCode] = useState("");
+  const [resetState, setResetState] = useState(null);
+  const [resetPassword, setResetPassword] = useState("");
   const [form, setForm] = useState({ email: "", budgetUsd: "", isActive: true });
+  const [page, setPage] = useState(1);
 
   const notifySuccess = useNotificationStore((s) => s.success);
   const notifyError = useNotificationStore((s) => s.error);
   const searchQuery = useHeaderSearchStore((s) => s.query);
+  const setSearchQuery = useHeaderSearchStore((s) => s.setQuery);
   const registerSearch = useHeaderSearchStore((s) => s.register);
   const unregisterSearch = useHeaderSearchStore((s) => s.unregister);
 
   useEffect(() => {
     registerSearch("Search users...");
+    const initial = new URLSearchParams(window.location.search).get("search");
+    if (initial) setSearchQuery(initial);
     return () => unregisterSearch();
-  }, [registerSearch, unregisterSearch]);
+  }, [registerSearch, unregisterSearch, setSearchQuery]);
 
   const loadUsers = useCallback(async () => {
     setLoading(true);
@@ -87,6 +95,15 @@ export default function UsersPage() {
     if (!needle) return users;
     return users.filter((user) => user.email.toLowerCase().includes(needle));
   }, [users, searchQuery]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredUsers.length / USERS_PER_PAGE));
+  const safePage = Math.min(page, totalPages);
+  const pageStart = (safePage - 1) * USERS_PER_PAGE;
+  const pagedUsers = filteredUsers.slice(pageStart, pageStart + USERS_PER_PAGE);
+
+  useEffect(() => {
+    setPage(1);
+  }, [searchQuery]);
 
   const summary = useMemo(() => {
     return users.reduce((acc, user) => {
@@ -141,6 +158,16 @@ export default function UsersPage() {
     setRedeemCode("");
   };
 
+  const openResetModal = (user) => {
+    setResetPassword("");
+    setResetState(user);
+  };
+
+  const closeResetModal = () => {
+    setResetState(null);
+    setResetPassword("");
+  };
+
   const formEmail = form.email.trim().toLowerCase();
   const budgetValue = Number(form.budgetUsd);
   const emailError = form.email && !EMAIL_PATTERN.test(formEmail) ? "Enter a valid email address" : "";
@@ -154,6 +181,7 @@ export default function UsersPage() {
     : "";
   const canTopUp = !!topUpState && topUpAmount !== "" && Number.isFinite(topUpValue) && topUpValue > 0;
   const canRedeem = !!redeemState && redeemCode.trim() !== "";
+  const canReset = !!resetState && resetPassword !== "";
 
   const saveUser = async () => {
     if (!canSave) return;
@@ -244,30 +272,28 @@ export default function UsersPage() {
   };
 
   const resetUserUsage = (user) => {
-    setConfirmState({
-      title: "Reset User Usage",
-      message: `Reset recorded usage for ${user.email}? The budget limit stays ${formatUsd(user.budgetUsd)}.`,
-      confirmText: "Reset Usage",
-      onConfirm: async () => {
-        setConfirmLoading(true);
-        try {
-          const res = await fetch(`/api/users/${encodeURIComponent(user.email)}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "reset-usage" }),
-          });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || "Failed to reset usage");
-          notifySuccess("User usage reset");
-          setConfirmState(null);
-          await loadUsers();
-        } catch (error) {
-          notifyError(error.message || "Failed to reset usage");
-        } finally {
-          setConfirmLoading(false);
-        }
-      },
-    });
+    openResetModal(user);
+  };
+
+  const submitResetUsage = async () => {
+    if (!canReset || !resetState) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/users/${encodeURIComponent(resetState.email)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "reset-usage", password: resetPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to reset usage");
+      notifySuccess("User usage reset");
+      closeResetModal();
+      await loadUsers();
+    } catch (error) {
+      notifyError(error.message || "Failed to reset usage");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const removeUserLimit = (user) => {
@@ -346,8 +372,8 @@ export default function UsersPage() {
             <p className="mt-1 text-xs text-text-muted">Create a user budget to limit spend</p>
           </div>
         ) : (
-          <div className="divide-y divide-border-subtle">
-            {filteredUsers.map((user) => (
+          <div className={cn("divide-y divide-border-subtle", totalPages > 1 && "md:min-h-[589px]")}>
+            {pagedUsers.map((user) => (
               <UserRow
                 key={user.email}
                 user={user}
@@ -362,6 +388,13 @@ export default function UsersPage() {
           </div>
         )}
       </Card>
+
+      <Pagination
+        currentPage={safePage}
+        pageSize={USERS_PER_PAGE}
+        totalItems={filteredUsers.length}
+        onPageChange={setPage}
+      />
 
       <Modal
         isOpen={!!modalState}
@@ -460,6 +493,41 @@ export default function UsersPage() {
               Redeem
             </Button>
             <Button onClick={closeRedeemModal} variant="ghost" fullWidth>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={!!resetState}
+        title="Reset User Usage"
+        onClose={closeResetModal}
+      >
+        <div className="flex flex-col gap-4">
+          {resetState && (
+            <p className="text-sm text-text-muted">
+              Reset recorded usage for{" "}
+              <span className="font-medium text-text-main">{resetState.email}</span>? The budget limit stays {formatUsd(resetState.budgetUsd)}.
+            </p>
+          )}
+          <Input
+            label="Confirm your password"
+            type="password"
+            value={resetPassword}
+            onChange={(e) => setResetPassword(e.target.value)}
+            placeholder="Dashboard password"
+            autoComplete="current-password"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && canReset && !saving) submitResetUsage();
+            }}
+            required
+          />
+          <div className="flex gap-2">
+            <Button onClick={submitResetUsage} variant="danger" fullWidth disabled={!canReset} loading={saving} icon="restart_alt">
+              Reset Usage
+            </Button>
+            <Button onClick={closeResetModal} variant="ghost" fullWidth>
               Cancel
             </Button>
           </div>

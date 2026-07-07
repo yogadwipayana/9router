@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal } from "@/shared/components";
+import Pagination from "@/shared/components/Pagination";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS, THINKING_CONFIG } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
@@ -892,7 +893,7 @@ export default function ProviderDetailPage() {
   const showReorderArrows = connectionSort === "priority";
 
   const connectionsList = (
-    <div className="flex min-w-0 flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03]">
+    <div className={`flex min-w-0 flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03]${connectionsTotalPages > 1 ? " md:min-h-[600px]" : ""}`}>
       {pagedConnections
         .map((conn, index) => {
           const absoluteIndex = connectionsPageStart + index;
@@ -1549,36 +1550,12 @@ export default function ProviderDetailPage() {
                 </div>
               )}
               {connectionsList}
-              {connectionsTotalPages > 1 && (
-                <div className="mt-3 flex items-center justify-between gap-2">
-                  <span className="text-xs text-text-muted">
-                    {connectionsPageStart + 1}-{Math.min(connectionsPageStart + CONNECTIONS_PER_PAGE, sortedConnections.length)} of {sortedConnections.length}
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      icon="chevron_left"
-                      disabled={connectionsSafePage <= 1}
-                      onClick={() => setConnectionPage((p) => Math.max(1, p - 1))}
-                    >
-                      Prev
-                    </Button>
-                    <span className="text-xs text-text-muted">
-                      {connectionsSafePage} / {connectionsTotalPages}
-                    </span>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      icon="chevron_right"
-                      disabled={connectionsSafePage >= connectionsTotalPages}
-                      onClick={() => setConnectionPage((p) => Math.min(connectionsTotalPages, p + 1))}
-                    >
-                      Next
-                    </Button>
-                  </div>
-                </div>
-              )}
+              <Pagination
+                currentPage={connectionsSafePage}
+                pageSize={CONNECTIONS_PER_PAGE}
+                totalItems={sortedConnections.length}
+                onPageChange={setConnectionPage}
+              />
               {!isCompatible && (
                 <div className="mt-4 grid grid-cols-1 gap-2 sm:flex">
                   {providerId === "iflow" && (

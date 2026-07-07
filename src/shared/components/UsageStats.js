@@ -3,7 +3,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { FREE_PROVIDERS, AI_PROVIDERS } from "@/shared/constants/providers";
-import { useNotificationStore } from "@/store/notificationStore";
 
 // Keep providers without serviceKinds (default LLM) or with "llm" in serviceKinds
 function isLLMProvider(id) {
@@ -12,10 +11,7 @@ function isLLMProvider(id) {
   return p.serviceKinds.includes("llm");
 }
 import Badge from "./Badge";
-import Button from "./Button";
 import Card from "./Card";
-import Input from "./Input";
-import Modal from "./Modal";
 import OverviewCards from "@/app/(dashboard)/dashboard/usage/components/OverviewCards";
 import UsageTable, {
   fmt,
@@ -44,7 +40,7 @@ function TimeAgo({ timestamp }) {
   return <>{timeAgo(timestamp)}</>;
 }
 
-function RecentRequests({ requests = [], onResetUsage, resetting = false }) {
+function RecentRequests({ requests = [] }) {
   return (
     <Card
       className="flex min-w-0 flex-col overflow-hidden"
@@ -56,18 +52,6 @@ function RecentRequests({ requests = [], onResetUsage, resetting = false }) {
         <span className="text-xs font-semibold text-text-muted uppercase tracking-wide">
           Recent Requests
         </span>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          icon="restart_alt"
-          loading={resetting}
-          onClick={onResetUsage}
-          className="h-7 shrink-0 px-2 text-[11px] text-error hover:bg-error/10 hover:text-error"
-          title="Reset usage statistics and request history"
-        >
-          Reset Usage
-        </Button>
       </div>
 
       {!requests.length ? (
@@ -323,17 +307,10 @@ export default function UsageStats({
   const [viewMode, setViewMode] = useState("costs");
   const [providers, setProviders] = useState([]);
   const [periodLocal, setPeriodLocal] = useState("today");
-  const [resettingUsage, setResettingUsage] = useState(false);
-  const [resetModalOpen, setResetModalOpen] = useState(false);
-  const [resetPassword, setResetPassword] = useState("");
-  const [resetPasswordError, setResetPasswordError] = useState("");
-  const [chartRefreshKey, setChartRefreshKey] = useState(0);
   const isInitialLoad = useRef(true);
   const hasLoadedStats = useRef(false);
   const period = periodProp ?? periodLocal;
   const setPeriod = setPeriodProp ?? setPeriodLocal;
-  const notifySuccess = useNotificationStore((s) => s.success);
-  const notifyError = useNotificationStore((s) => s.error);
 
   // Fetch connected providers once, deduplicate by provider type
   // Always include noAuth free providers (e.g. opencode) regardless of connections
@@ -437,61 +414,6 @@ export default function UsageStats({
       router.replace(`?${params.toString()}`, { scroll: false });
     },
     [searchParams, router],
-  );
-
-  const openResetUsageModal = useCallback(() => {
-    setResetPassword("");
-    setResetPasswordError("");
-    setResetModalOpen(true);
-  }, []);
-
-  const closeResetUsageModal = useCallback(() => {
-    if (resettingUsage) return;
-    setResetModalOpen(false);
-    setResetPassword("");
-    setResetPasswordError("");
-  }, [resettingUsage]);
-
-  const handleResetUsage = useCallback(
-    async (event) => {
-      event?.preventDefault();
-      if (resettingUsage) return;
-      if (!resetPassword.trim()) {
-        setResetPasswordError("Password is required");
-        return;
-      }
-
-      setResettingUsage(true);
-      setResetPasswordError("");
-      try {
-        const res = await fetch(`/api/usage/reset?period=${period}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          cache: "no-store",
-          body: JSON.stringify({ password: resetPassword }),
-        });
-        const data = await res.json().catch(() => ({}));
-
-        if (!res.ok) {
-          throw new Error(data.error || "Failed to reset usage");
-        }
-
-        setStats(data.stats || null);
-        setChartRefreshKey((value) => value + 1);
-        setResetModalOpen(false);
-        setResetPassword("");
-        notifySuccess("Usage statistics reset");
-      } catch (error) {
-        const message = error.message || "Failed to reset usage";
-        setResetPasswordError(message);
-        if (!message.toLowerCase().includes("password")) {
-          notifyError(message);
-        }
-      } finally {
-        setResettingUsage(false);
-      }
-    },
-    [notifyError, notifySuccess, period, resetPassword, resettingUsage],
   );
 
   // Compute active table data
@@ -741,11 +663,7 @@ export default function UsageStats({
               lastProvider={stats.recentRequests?.[0]?.provider || ""}
               errorProvider={stats.errorProvider || ""}
             />
-            <RecentRequests
-              requests={stats.recentRequests || []}
-              onResetUsage={openResetUsageModal}
-              resetting={resettingUsage}
-            />
+            <RecentRequests requests={stats.recentRequests || []} />
           </div>
         )}
 
@@ -753,7 +671,7 @@ export default function UsageStats({
         {loading ? (
           spinner
         ) : (
-          <UsageChart key={chartRefreshKey} period={period} />
+          <UsageChart period={period} />
         )}
 
         {/* Table with dropdown selector */}
@@ -806,58 +724,6 @@ export default function UsageStats({
               )}
         </div>
       </div>
-      <Modal
-        isOpen={resetModalOpen}
-        onClose={closeResetUsageModal}
-        title="Reset Usage"
-        size="sm"
-        closeOnOverlay={!resettingUsage}
-        footer={
-          <>
-            <Button
-              variant="ghost"
-              onClick={closeResetUsageModal}
-              disabled={resettingUsage}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              form="reset-usage-form"
-              variant="danger"
-              icon="delete"
-              loading={resettingUsage}
-            >
-              Reset Usage
-            </Button>
-          </>
-        }
-      >
-        <form
-          id="reset-usage-form"
-          onSubmit={handleResetUsage}
-          className="flex flex-col gap-4"
-        >
-          <p className="text-sm text-text-muted">
-            This deletes usage totals, request history, and request details.
-            Enter the dashboard password to continue.
-          </p>
-          <Input
-            label="Password"
-            type="password"
-            value={resetPassword}
-            onChange={(event) => {
-              setResetPassword(event.target.value);
-              if (resetPasswordError) setResetPasswordError("");
-            }}
-            error={resetPasswordError}
-            disabled={resettingUsage}
-            placeholder="Enter password"
-            autoFocus
-            autoComplete="current-password"
-          />
-        </form>
-      </Modal>
     </>
   );
 }

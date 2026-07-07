@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { addOwnerBudget, deleteOwnerUser, getOwnerBudgetState, redeemVoucher, upsertOwnerUser } from "@/lib/localDb";
 import { resetUsageForOwner } from "@/lib/usageDb";
+import { verifyDashboardPassword } from "@/lib/auth/dashboardSession";
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -67,6 +68,9 @@ export async function POST(request, { params }) {
     }
 
     if (body.action === "reset-usage") {
+      if (!(await verifyDashboardPassword(body.password))) {
+        return NextResponse.json({ error: "Invalid password" }, { status: 401 });
+      }
       const reset = await resetUsageForOwner(email);
       const user = await getOwnerBudgetState(email);
       return NextResponse.json({ user, reset });

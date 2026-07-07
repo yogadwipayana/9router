@@ -144,7 +144,7 @@ export default function ProviderLimits() {
   const [proxyPools, setProxyPools] = useState([]);
   const [providerFilter, setProviderFilter] = useState("all");
   const [providerOptions, setProviderOptions] = useState([]);
-  const [accountFilter, setAccountFilter] = useState("all");
+  const [accountFilter, setAccountFilter] = useState("active");
   const [quotaSortMode, setQuotaSortMode] = useState("default");
   const [expiringFirst, setExpiringFirst] = useState(false);
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);

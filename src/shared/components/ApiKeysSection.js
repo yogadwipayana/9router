@@ -1,13 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import Button from "./Button";
 import Card from "./Card";
 import Input from "./Input";
 import Modal, { ConfirmModal } from "./Modal";
+import Pagination from "./Pagination";
 import Select from "./Select";
 import Toggle from "./Toggle";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import { cn } from "@/shared/utils/cn";
+import { useHeaderSearchStore } from "@/store/headerSearchStore";
+
+const KEYS_PER_PAGE = 10;
 
 export default function ApiKeysSection() {
   const [keys, setKeys] = useState([]);
@@ -20,12 +26,32 @@ export default function ApiKeysSection() {
   const [createdKey, setCreatedKey] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
   const [visibleKeys, setVisibleKeys] = useState(new Set());
+  const [page, setPage] = useState(1);
   const { copied, copy } = useCopyToClipboard();
+
+  const router = useRouter();
+  const searchQuery = useHeaderSearchStore((s) => s.query);
+  const registerSearch = useHeaderSearchStore((s) => s.register);
+  const unregisterSearch = useHeaderSearchStore((s) => s.unregister);
+
+  const goToUser = (email) => {
+    if (!email) return;
+    router.push(`/dashboard/users?search=${encodeURIComponent(email)}`);
+  };
 
   useEffect(() => {
     fetchKeys();
     fetchUsers();
   }, []);
+
+  useEffect(() => {
+    registerSearch("Search API keys...");
+    return () => unregisterSearch();
+  }, [registerSearch, unregisterSearch]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [searchQuery]);
 
   const fetchKeys = async () => {
     try {
@@ -153,6 +179,24 @@ export default function ApiKeysSection() {
   const hasUsers = userOptions.length > 0;
   const canCreateKey = Boolean(newKeyName.trim()) && Boolean(newKeyUserEmail) && hasUsers;
 
+  const filteredKeys = useMemo(() => {
+    const needle = searchQuery.trim().toLowerCase();
+    if (!needle) return keys;
+    return keys.filter((key) => {
+      const user = key.userEmail || key.owner || "";
+      return (
+        (key.name || "").toLowerCase().includes(needle) ||
+        (key.key || "").toLowerCase().includes(needle) ||
+        user.toLowerCase().includes(needle)
+      );
+    });
+  }, [keys, searchQuery]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredKeys.length / KEYS_PER_PAGE));
+  const safePage = Math.min(page, totalPages);
+  const pageStart = (safePage - 1) * KEYS_PER_PAGE;
+  const pagedKeys = filteredKeys.slice(pageStart, pageStart + KEYS_PER_PAGE);
+
   return (
     <>
       <Card id="require-api-key">
@@ -189,6 +233,14 @@ export default function ApiKeysSection() {
               Create Key
             </Button>
           </div>
+        ) : filteredKeys.length === 0 ? (
+          <div className="text-center py-12">
+            <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-primary/10 text-primary mb-4">
+              <span className="material-symbols-outlined text-[32px]">search_off</span>
+            </div>
+            <p className="text-text-main font-medium mb-1">No matching API keys</p>
+            <p className="text-sm text-text-muted">Try a different search term</p>
+          </div>
         ) : (
           <div className="flex flex-col">
             <div className="hidden sm:grid grid-cols-[minmax(0,1fr)_minmax(10rem,14rem)_auto] items-center gap-3 pb-2 text-xs font-medium text-text-muted border-b border-black/[0.03] dark:border-white/[0.03]">
@@ -196,7 +248,8 @@ export default function ApiKeysSection() {
               <span>User</span>
               <span className="text-right">Actions</span>
             </div>
-            {keys.map((key) => {
+            <div className={cn(totalPages > 1 && "md:min-h-[880px]")}>
+            {pagedKeys.map((key) => {
               const userEmail = getKeyUser(key);
 
               return (
@@ -232,19 +285,38 @@ export default function ApiKeysSection() {
                       Created {new Date(key.createdAt).toLocaleDateString()}
                     </p>
                     <p className="text-xs text-text-muted mt-1 sm:hidden">
-                      User <span className="break-all">{userEmail}</span>
+                      User{" "}
+                      {key.userEmail || key.owner ? (
+                        <button
+                          type="button"
+                          onClick={() => goToUser(key.userEmail || key.owner)}
+                          className="break-all text-left text-primary hover:underline"
+                        >
+                          {userEmail}
+                        </button>
+                      ) : (
+                        <span className="break-all">{userEmail}</span>
+                      )}
                     </p>
                     {key.isActive === false && (
                       <p className="text-xs text-orange-500 mt-1">Paused</p>
                     )}
                   </div>
                   <div className="hidden sm:block min-w-0">
-                    <span
-                      className="block text-xs text-text-muted truncate"
-                      title={userEmail}
-                    >
-                      {userEmail}
-                    </span>
+                    {key.userEmail || key.owner ? (
+                      <button
+                        type="button"
+                        onClick={() => goToUser(key.userEmail || key.owner)}
+                        title={`View ${userEmail} in Users`}
+                        className="block max-w-full truncate text-left text-xs text-text-muted hover:text-primary hover:underline transition-colors"
+                      >
+                        {userEmail}
+                      </button>
+                    ) : (
+                      <span className="block text-xs text-text-muted truncate" title={userEmail}>
+                        {userEmail}
+                      </span>
+                    )}
                   </div>
                   <div className="flex items-center justify-end gap-2">
                     <Toggle
@@ -276,6 +348,13 @@ export default function ApiKeysSection() {
                 </div>
               );
             })}
+            </div>
+            <Pagination
+              currentPage={safePage}
+              pageSize={KEYS_PER_PAGE}
+              totalItems={filteredKeys.length}
+              onPageChange={setPage}
+            />
           </div>
         )}
       </Card>
