@@ -76,7 +76,7 @@ export {
 
 // Request details
 export {
-  saveRequestDetail, getRequestDetails, getRequestDetailById, resetRequestDetails,
+  saveRequestDetail, getRequestDetails, getRequestDetailById, resetRequestDetails, getDistinctProviders,
 } from "./repos/requestDetailsRepo.js";
 
 // Export/import full DB

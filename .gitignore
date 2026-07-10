@@ -75,3 +75,4 @@ gitbook/README.md
 open-sse.old/
 .graphifyignore
 graphify-out/*
+.next-analyze/*

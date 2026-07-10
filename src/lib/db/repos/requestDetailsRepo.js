@@ -89,6 +89,7 @@ function normalizeDetailRecord(item, config) {
     providerRequest: truncateField(detail.providerRequest, config.maxJsonSize),
     providerResponse: truncateField(detail.providerResponse, config.maxJsonSize),
     response: truncateField(detail.response, config.maxJsonSize),
+    pxpipe: detail.pxpipe || undefined,
   };
 
   return {
@@ -188,6 +189,12 @@ export async function getRequestDetails(filter = {}) {
     details,
     pagination: { page, pageSize, totalItems, totalPages, hasNext: page < totalPages, hasPrev: page > 1 },
   };
+}
+
+export async function getDistinctProviders() {
+  const db = await getAdapter();
+  const rows = db.all(`SELECT DISTINCT provider FROM requestDetails WHERE provider IS NOT NULL ORDER BY provider ASC`);
+  return rows.map((r) => r.provider);
 }
 
 export async function getRequestDetailById(id) {

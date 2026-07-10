@@ -17,7 +17,13 @@ import UsageTable, {
   fmt,
   fmtTime,
 } from "@/app/(dashboard)/dashboard/usage/components/UsageTable";
-import ProviderTopology from "@/app/(dashboard)/dashboard/usage/components/ProviderTopology";
+import dynamic from "next/dynamic";
+// Lazy-load: keeps @xyflow/react out of the shared bundle until topology renders
+const ProviderTopology = dynamic(
+  () =>
+    import("@/app/(dashboard)/dashboard/usage/components/ProviderTopology"),
+  { ssr: false },
+);
 import UsageChart from "@/app/(dashboard)/dashboard/usage/components/UsageChart";
 
 function timeAgo(timestamp) {
