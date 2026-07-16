@@ -50,13 +50,8 @@ function parseKiroQuotaData(data) {
 
 export async function getKiroUsage(accessToken, providerSpecificData, proxyOptions = null) {
   const authMethod = providerSpecificData?.authMethod || "builder-id";
-  // API-key Kiro connections authenticate the quota API the same way the chat
-  // executor does: a bearer token plus a `tokentype: API_KEY` header so
-  // CodeWhisperer treats it as a long-lived API key rather than an OIDC token.
-  // Without this header the GetUsageLimits call is rejected (401/403).
   const isApiKey = authMethod === "api_key";
   const isExternalIdp = authMethod === "external_idp";
-  const apiKeyHeaders = isApiKey ? { tokentype: "API_KEY" } : {};
   const externalIdpHeaders = isExternalIdp ? { TokenType: "EXTERNAL_IDP" } : {};
 
   // For api-key auth, never inject the shared default placeholder profileArn —
@@ -89,65 +84,82 @@ export async function getKiroUsage(accessToken, providerSpecificData, proxyOptio
     resourceType: "AGENTIC_REQUEST",
   });
 
-  // For compatibility, try multiple known Kiro usage endpoints
-  const attempts = [
-    {
-      name: "codewhisperer-get",
-      run: async () => proxyAwareFetch(
-        `${cwHost}${limitsPath}?${getUsageParams.toString()}`,
+  // API-key auth uses Kiro's own management gateway, which accepts a raw
+  // long-lived API key as a bearer token. The AWS CodeWhisperer/Q hosts reject
+  // that same key with 401/403, so they're only used for OAuth-derived tokens.
+  const attempts = isApiKey
+    ? [
         {
-          method: "GET",
-          headers: {
-            "Authorization": `Bearer ${accessToken}`,
-            "Accept": "application/json",
-            "x-amz-user-agent": "aws-sdk-js/1.0.0 KiroIDE",
-            "user-agent": "aws-sdk-js/1.0.0 KiroIDE",
-            ...apiKeyHeaders,
-            ...externalIdpHeaders,
+          name: "management-get",
+          run: async () => proxyAwareFetch(
+            `https://management.${region}.kiro.dev${limitsPath}?${getUsageParams.toString()}`,
+            {
+              method: "GET",
+              headers: {
+                "Authorization": `Bearer ${accessToken}`,
+                "Accept": "application/json",
+                "TokenType": "API_KEY",
+              },
+            },
+            proxyOptions
+          ),
+        },
+      ]
+    : [
+        {
+          name: "codewhisperer-get",
+          run: async () => proxyAwareFetch(
+            `${cwHost}${limitsPath}?${getUsageParams.toString()}`,
+            {
+              method: "GET",
+              headers: {
+                "Authorization": `Bearer ${accessToken}`,
+                "Accept": "application/json",
+                "x-amz-user-agent": "aws-sdk-js/1.0.0 KiroIDE",
+                "user-agent": "aws-sdk-js/1.0.0 KiroIDE",
+                ...externalIdpHeaders,
+              },
+            },
+            proxyOptions
+          ),
+        },
+        {
+          name: "codewhisperer-post",
+          run: async () => proxyAwareFetch(cwHost, {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${accessToken}`,
+              "Content-Type": "application/x-amz-json-1.0",
+              "x-amz-target": "AmazonCodeWhispererService.GetUsageLimits",
+              "Accept": "application/json",
+              ...externalIdpHeaders,
+            },
+            body: JSON.stringify({
+              origin: "AI_EDITOR",
+              ...(profileArn ? { profileArn } : {}),
+              resourceType: "AGENTIC_REQUEST",
+            }),
+          }, proxyOptions),
+        },
+        {
+          name: "q-get",
+          run: async () => {
+            const params = new URLSearchParams({
+              origin: "AI_EDITOR",
+              ...(profileArn ? { profileArn } : {}),
+              resourceType: "AGENTIC_REQUEST",
+            });
+            return proxyAwareFetch(`${qHost}${limitsPath}?${params}`, {
+              method: "GET",
+              headers: {
+                "Authorization": `Bearer ${accessToken}`,
+                "Accept": "application/json",
+                ...externalIdpHeaders,
+              },
+            }, proxyOptions);
           },
         },
-        proxyOptions
-      ),
-    },
-    {
-      name: "codewhisperer-post",
-      run: async () => proxyAwareFetch(cwHost, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${accessToken}`,
-          "Content-Type": "application/x-amz-json-1.0",
-          "x-amz-target": "AmazonCodeWhispererService.GetUsageLimits",
-          "Accept": "application/json",
-          ...apiKeyHeaders,
-          ...externalIdpHeaders,
-        },
-        body: JSON.stringify({
-          origin: "AI_EDITOR",
-          ...(profileArn ? { profileArn } : {}),
-          resourceType: "AGENTIC_REQUEST",
-        }),
-      }, proxyOptions),
-    },
-    {
-      name: "q-get",
-      run: async () => {
-        const params = new URLSearchParams({
-          origin: "AI_EDITOR",
-          ...(profileArn ? { profileArn } : {}),
-          resourceType: "AGENTIC_REQUEST",
-        });
-        return proxyAwareFetch(`${qHost}${limitsPath}?${params}`, {
-          method: "GET",
-          headers: {
-            "Authorization": `Bearer ${accessToken}`,
-            "Accept": "application/json",
-            ...apiKeyHeaders,
-            ...externalIdpHeaders,
-          },
-        }, proxyOptions);
-      },
-    },
-  ];
+      ];
 
   let sawAuthError = false;
   const errors = [];

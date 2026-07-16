@@ -294,10 +294,13 @@ export class KiroService {
   }
 
   /**
-   * Validate an API-key credential by listing profiles with it. API keys are
-   * long-lived bearer tokens (no refresh), so the only way to validate one is
-   * to make an authenticated CodeWhisperer call. Returns a credential object
-   * ready to persist as a "kiro" connection with authMethod="api_key".
+   * Validate an API-key credential against Kiro's management gateway — the only
+   * surface that accepts a raw long-lived API key as a bearer token (the AWS
+   * CodeWhisperer/Q hosts reject it). API keys have no refresh token, so the
+   * only way to validate one is an authenticated call. The key's resources may
+   * live in any region, so probe the common ones and keep the first that
+   * responds; that region is stored so the quota panel targets the right host.
+   * Returns a credential object ready to persist with authMethod="api_key".
    */
   async validateApiKey(apiKey, region = "us-east-1") {
     if (!apiKey || typeof apiKey !== "string" || !apiKey.trim()) {
@@ -305,20 +308,54 @@ export class KiroService {
     }
     const trimmed = apiKey.trim();
 
-    let profileArn = null;
-    try {
-      profileArn = await this.listAvailableProfiles(trimmed, region);
-    } catch (error) {
-      throw new Error(`API key validation failed: ${error.message}`);
+    const candidates = [region, "us-east-1", "eu-central-1", "ap-southeast-1"]
+      .filter((r, i, arr) => r && arr.indexOf(r) === i);
+
+    const params = new URLSearchParams({
+      isEmailRequired: "true",
+      origin: "AI_EDITOR",
+      resourceType: "AGENTIC_REQUEST",
+    });
+
+    let lastError = "unknown";
+    for (const rg of candidates) {
+      assertValidAwsRegion(rg);
+      try {
+        const response = await fetch(
+          `https://management.${rg}.kiro.dev/getUsageLimits?${params.toString()}`,
+          {
+            method: "GET",
+            headers: {
+              "Authorization": `Bearer ${trimmed}`,
+              "TokenType": "API_KEY",
+              "Accept": "application/json",
+            },
+          }
+        );
+        if (response.ok) {
+          let email = null;
+          try {
+            const data = await response.json();
+            email = data?.userInfo?.email || null;
+          } catch {
+            // Response body isn't required for validation
+          }
+          return {
+            accessToken: trimmed,
+            refreshToken: null,
+            profileArn: null,
+            region: rg,
+            email,
+            authMethod: "api_key",
+          };
+        }
+        lastError = `HTTP ${response.status}`;
+      } catch (error) {
+        lastError = error.message;
+      }
     }
 
-    return {
-      accessToken: trimmed,
-      refreshToken: null,
-      profileArn,
-      region,
-      authMethod: "api_key",
-    };
+    throw new Error(`API key validation failed: ${lastError}`);
   }
 
   /**

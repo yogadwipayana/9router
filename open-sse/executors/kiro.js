@@ -90,13 +90,31 @@ export class KiroExecutor extends BaseExecutor {
   getOrderedBaseUrls(credentials) {
     const baseUrls = this.getBaseUrls();
     const authMethod = credentials?.providerSpecificData?.authMethod;
+
+    // API-key (ksk_) auth authenticates against Kiro's own runtime gateway
+    // (runtime.{region}.kiro.dev), region-bound. The AWS CodeWhisperer/Q hosts
+    // reject a ksk_ API key (DNS-less regional endpoints / "subscription does
+    // not support this application"), so the region-correct kiro.dev host must
+    // come FIRST and be region-substituted too — not just the amazonaws hosts.
+    // Hitting us-east-1 with a non-us-east-1 key returns 403 "bearer token
+    // included in the request is invalid".
+    if (authMethod === "api_key") {
+      const region = this.resolveRegion(credentials);
+      const urls = region !== "us-east-1"
+        ? baseUrls.map((u) => u.replace("us-east-1", region))
+        : baseUrls;
+      const kiro = urls.filter((u) => u.includes("kiro.dev"));
+      const others = urls.filter((u) => !u.includes("kiro.dev"));
+      return kiro.length > 0 ? [...kiro, ...others] : urls;
+    }
+
     // IAM Identity Center (idc) tokens are AWS SSO access tokens — the same
-    // family as external_idp/api_key. The kiro.dev gateway rejects them with
+    // family as external_idp. The kiro.dev gateway rejects them with
     // 403 "bearer token invalid", so they must hit the CodeWhisperer
     // *.amazonaws.com surface, in the region the token was minted in (upstream
     // v0.5.18 "route IdC auth to regional CodeWhisperer surface").
     const isCodeWhispererSurface =
-      authMethod === "api_key" || authMethod === "external_idp" || authMethod === "idc";
+      authMethod === "external_idp" || authMethod === "idc";
     const region = this.resolveRegion(credentials);
     const regional = region !== "us-east-1";
 

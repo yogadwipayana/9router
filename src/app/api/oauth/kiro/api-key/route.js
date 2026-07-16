@@ -27,8 +27,9 @@ export async function POST(request) {
       region || "us-east-1"
     );
 
-    // Extract email from JWT if the key happens to be a JWT (optional display)
-    const email = kiroService.extractEmailFromJWT(credential.accessToken);
+    // Prefer the email returned by the management endpoint; fall back to
+    // decoding the key as a JWT (optional display only).
+    const email = credential.email || kiroService.extractEmailFromJWT(credential.accessToken);
 
     // API keys never expire on a fixed schedule; persist a long horizon so the
     // proactive refresh path (which requires a refreshToken anyway) is skipped.
