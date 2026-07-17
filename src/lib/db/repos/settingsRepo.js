@@ -47,7 +47,20 @@ const DEFAULT_SETTINGS = {
   pxpipeAutoInstall: true,
   pxpipeMinChars: 25000,
   pxpipeTimeoutMs: 15000,
+  // usageHistory retention window in days; 0 = keep forever. Owner budgets are
+  // unaffected — lifetime spend lives in the ownerSpend aggregate table.
+  usageRetentionDays: 0,
 };
+
+// getSettings is called several times per request (auth check, chat handler,
+// per-fallback-iteration) — memoize briefly. Keyed per adapter instance so a
+// DB reset/test harness with a fresh adapter never sees another DB's settings.
+const SETTINGS_TTL_MS = 3000;
+const settingsCache = new WeakMap();
+
+export function invalidateSettingsCache(db) {
+  if (db) settingsCache.delete(db);
+}
 
 async function readRaw() {
   const db = await getAdapter();
@@ -75,8 +88,15 @@ function mergeWithDefaults(raw) {
 }
 
 export async function getSettings() {
-  const raw = await readRaw();
-  return mergeWithDefaults(raw);
+  const db = await getAdapter();
+  const hit = settingsCache.get(db);
+  if (hit && hit.expiresAt > Date.now()) return { ...hit.value };
+
+  const row = db.get(`SELECT data FROM settings WHERE id = 1`);
+  const merged = mergeWithDefaults(row ? parseJson(row.data, {}) : {});
+  settingsCache.set(db, { value: merged, expiresAt: Date.now() + SETTINGS_TTL_MS });
+  // Shallow copy so a caller mutating its result can't poison the cache.
+  return { ...merged };
 }
 
 // Atomic read-merge-write inside transaction (prevents losing concurrent updates)
@@ -92,7 +112,9 @@ export async function updateSettings(updates) {
       [stringifyJson(next)]
     );
   });
-  return mergeWithDefaults(next);
+  const merged = mergeWithDefaults(next);
+  settingsCache.set(db, { value: merged, expiresAt: Date.now() + SETTINGS_TTL_MS });
+  return { ...merged };
 }
 
 export async function isCloudEnabled() {

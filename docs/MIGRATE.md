@@ -113,3 +113,6 @@ supabase-db:
   image: 'supabase/postgres:15.8.1.085'
   ports:
     - '5432:5432'
+
+npx prisma db execute --file prisma/manual/add-owner-spend.sql
+npx prisma generate

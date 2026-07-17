@@ -32,6 +32,20 @@ model OwnerUser {
   @@map("ownerUsers")
 }
 
+// Incrementally-maintained lifetime spend per owner — budget checks read this
+// single row instead of SUM-ing usageHistory per request. Created MANUALLY
+// (migrate history is broken): apply prisma/manual/add-owner-spend.sql via
+// `prisma db execute`, then `prisma generate`. Until then the code falls back
+// to the SUM path automatically.
+model OwnerSpend {
+  owner        String @id
+  spentUsd     Float  @default(0)
+  requestCount Int    @default(0)
+  updatedAt    String
+
+  @@map("ownerSpend")
+}
+
 model UsageHistory {
   id               Int     @id @default(autoincrement())
   timestamp        String

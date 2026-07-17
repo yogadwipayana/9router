@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 4;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -96,6 +96,19 @@ export const TABLES = {
       updatedAt: "TEXT NOT NULL",
     },
   },
+  // Incrementally-maintained lifetime spend per owner (updated inside the
+  // saveRequestUsage transaction). Budget checks read this single row instead
+  // of SUM-ing usageHistory per request; it also survives retention pruning.
+  // Kept separate from ownerUsers because spend is tracked for owners that
+  // have no configured budget row.
+  ownerSpend: {
+    columns: {
+      owner: "TEXT PRIMARY KEY",
+      spentUsd: "REAL NOT NULL DEFAULT 0",
+      requestCount: "INTEGER NOT NULL DEFAULT 0",
+      updatedAt: "TEXT NOT NULL",
+    },
+  },
   combos: {
     columns: {
       id: "TEXT PRIMARY KEY",
@@ -132,6 +145,11 @@ export const TABLES = {
       status: "TEXT",
       tokens: "TEXT",
       meta: "TEXT",
+      // Deterministic dedup key (timestamp|provider|model|connectionId|apiKey|
+      // promptTokens|completionTokens) written by saveRequestUsage. Rows from
+      // before v3 keep NULL — NULLs are distinct in a UNIQUE index, and the
+      // dedup window only spans freshly written rows anyway.
+      dedupHash: "TEXT",
     },
     indexes: [
       "CREATE INDEX IF NOT EXISTS idx_uh_ts ON usageHistory(timestamp DESC)",
@@ -139,6 +157,7 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_uh_model ON usageHistory(model)",
       "CREATE INDEX IF NOT EXISTS idx_uh_conn ON usageHistory(connectionId)",
       "CREATE INDEX IF NOT EXISTS idx_uh_owner ON usageHistory(owner)",
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_uh_dedup ON usageHistory(dedupHash)",
     ],
   },
   usageDaily: {

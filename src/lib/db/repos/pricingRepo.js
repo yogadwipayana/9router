@@ -7,9 +7,24 @@ const pricingKv = makeKv("pricing");
 const CACHE_TTL_MS = 5000;
 
 let cache = { value: null, expiresAt: 0 };
+let userCache = { value: null, expiresAt: 0 };
 
 function invalidate() {
   cache = { value: null, expiresAt: 0 };
+  userCache = { value: null, expiresAt: 0 };
+}
+
+// Constants are static ESM modules — resolve the imports once instead of
+// re-running the dynamic-import machinery on every calculateCost call.
+let constantsPromise = null;
+function loadConstants() {
+  if (!constantsPromise) {
+    constantsPromise = Promise.all([
+      import("open-sse/providers/pricing.js"),
+      import("@/shared/constants/providers.js").catch(() => null),
+    ]);
+  }
+  return constantsPromise;
 }
 
 const FIELD_MAP_TO_DB = {
@@ -44,6 +59,14 @@ function pricingToRowData(pricing) {
   return out;
 }
 
+async function getUserPricingCached() {
+  const now = Date.now();
+  if (userCache.value && userCache.expiresAt > now) return userCache.value;
+  const value = await getUserPricing();
+  userCache = { value, expiresAt: now + CACHE_TTL_MS };
+  return value;
+}
+
 async function getUserPricing() {
   if (usePostgresOperationalData()) {
     const rows = await getPrisma().pricing.findMany();
@@ -61,8 +84,8 @@ export async function getPricing() {
   const now = Date.now();
   if (cache.value && cache.expiresAt > now) return cache.value;
 
-  const userPricing = await getUserPricing();
-  const { PROVIDER_PRICING } = await import("open-sse/providers/pricing.js");
+  const userPricing = await getUserPricingCached();
+  const [{ PROVIDER_PRICING }] = await loadConstants();
   const merged = {};
 
   for (const [provider, models] of Object.entries(PROVIDER_PRICING)) {
@@ -92,23 +115,22 @@ export async function getPricing() {
 
 export async function getPricingForModel(provider, model) {
   if (!model) return null;
-  const userPricing = await getUserPricing();
+  // Called from calculateCost on every request — serve from the same TTL cache
+  // as getPricing instead of hitting the kv table each time.
+  const userPricing = await getUserPricingCached();
+  const [constPricing, providerConstants] = await loadConstants();
   if (provider && userPricing[provider]?.[model]) return userPricing[provider][model];
 
   // Pricing page saves by provider alias (e.g. "cx" for "codex").
   // calculateCost passes the provider ID ("codex"), so also try the alias.
-  if (provider) {
-    try {
-      const { AI_PROVIDERS } = await import("@/shared/constants/providers.js");
-      const alias = AI_PROVIDERS[provider]?.alias;
-      if (alias && alias !== provider && userPricing[alias]?.[model]) {
-        return userPricing[alias][model];
-      }
-    } catch { /* ignore import failures */ }
+  if (provider && providerConstants) {
+    const alias = providerConstants.AI_PROVIDERS?.[provider]?.alias;
+    if (alias && alias !== provider && userPricing[alias]?.[model]) {
+      return userPricing[alias][model];
+    }
   }
 
-  const { getPricingForModel: resolveConst } = await import("open-sse/providers/pricing.js");
-  return resolveConst(provider, model);
+  return constPricing.getPricingForModel(provider, model);
 }
 
 // Atomic merge — per-(provider, model) read-modify-write

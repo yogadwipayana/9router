@@ -73,11 +73,11 @@ export async function getProviderConnections(filter = {}) {
   const params = [];
   if (filter.provider) { where.push("provider = ?"); params.push(filter.provider); }
   if (filter.isActive !== undefined) { where.push("isActive = ?"); params.push(filter.isActive ? 1 : 0); }
-  const sql = `SELECT * FROM providerConnections${where.length ? ` WHERE ${where.join(" AND ")}` : ""}`;
+  // NULL/0 priority sorts last (mirrors the old JS `priority || 999` sort);
+  // rowid tiebreak keeps insertion order for equal priorities.
+  const sql = `SELECT * FROM providerConnections${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY CASE WHEN COALESCE(priority, 0) = 0 THEN 999 ELSE priority END, rowid`;
   const rows = db.all(sql, params);
-  const list = rows.map(rowToConn);
-  list.sort((a, b) => (a.priority || 999) - (b.priority || 999));
-  return list;
+  return rows.map(rowToConn);
 }
 
 export async function getProviderConnectionById(id) {

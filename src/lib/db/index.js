@@ -271,6 +271,11 @@ export async function importDb(payload) {
     }
   });
 
+  if (payload.settings !== undefined) {
+    const { invalidateSettingsCache } = await import("./repos/settingsRepo.js");
+    invalidateSettingsCache(db);
+  }
+
   await importPostgresOperationalTables(payload);
   return await exportDb();
 }

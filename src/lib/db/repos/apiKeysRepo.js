@@ -115,6 +115,12 @@ export async function createApiKey(name, machineId, owner = null) {
 }
 
 export async function updateApiKey(id, data) {
+  // Keep the lowercase-owner invariant (createApiKey normalizes; budget/spend
+  // queries rely on `owner = ?` being sargable against lowercase values).
+  if (typeof data.owner === "string") {
+    data = { ...data, owner: data.owner.trim().toLowerCase() || null };
+  }
+
   if (usePostgresOperationalData()) {
     const prisma = getPrisma();
     const row = await prisma.apiKey.findUnique({ where: { id } });

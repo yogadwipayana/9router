@@ -1,5 +1,6 @@
 import { getAdapter } from "../driver.js";
 import { getPrisma, usePostgresOperationalData } from "../../prisma.js";
+import { ownerSpendPgAvailable, disableOwnerSpendPg } from "../helpers/ownerSpendPg.js";
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -71,18 +72,32 @@ function getKeyStats(db) {
 }
 
 function getUsageStats(db) {
-  // Aggregate by usageHistory.owner so spend totals survive after an ApiKey
-  // is deleted. Older history written before the owner column existed is
-  // backfilled by the migration; rows for keys that were already deleted by
-  // then will have owner = NULL and stay excluded — there's no source of
-  // truth left to recover them from.
-  const rows = db.all(`
-    SELECT lower(owner) AS email, COUNT(id) AS requestCount, COALESCE(SUM(cost), 0) AS spentUsd
-    FROM usageHistory
-    WHERE owner IS NOT NULL AND trim(owner) != ''
-    GROUP BY lower(owner)
-  `);
+  // Spend per owner comes from the incrementally-maintained ownerSpend table
+  // (seeded by migration 004, updated inside the saveRequestUsage transaction)
+  // instead of re-aggregating usageHistory. It survives ApiKey deletion AND
+  // retention pruning of old history rows.
+  const rows = db.all(`SELECT owner AS email, requestCount, spentUsd FROM ownerSpend`);
   return Object.fromEntries(rows.map((row) => [row.email, row]));
+}
+
+// Postgres variant with graceful fallback: until the manually-applied
+// ownerSpend table + regenerated client exist, aggregate from usageHistory
+// (owner is lowercase by invariant, so the bare column stays index-friendly).
+async function getPgUsageStatsRows(prisma) {
+  if (ownerSpendPgAvailable(prisma)) {
+    try {
+      const rows = await prisma.ownerSpend.findMany();
+      return rows.map((r) => ({ email: r.owner, requestCount: r.requestCount, spentUsd: r.spentUsd }));
+    } catch (e) {
+      disableOwnerSpendPg(e);
+    }
+  }
+  return await prisma.$queryRaw`
+    SELECT "owner" AS email, COUNT("id")::int AS "requestCount", COALESCE(SUM("cost"), 0)::float8 AS "spentUsd"
+    FROM "usageHistory"
+    WHERE "owner" IS NOT NULL AND "owner" != ''
+    GROUP BY "owner"
+  `;
 }
 
 export async function getOwnerUsers() {
@@ -96,12 +111,7 @@ export async function getOwnerUsers() {
       WHERE "owner" IS NOT NULL AND btrim("owner") != ''
       GROUP BY lower("owner")
     `;
-    const usageStatsRows = await prisma.$queryRaw`
-      SELECT lower("owner") AS email, COUNT("id")::int AS "requestCount", COALESCE(SUM("cost"), 0)::float8 AS "spentUsd"
-      FROM "usageHistory"
-      WHERE "owner" IS NOT NULL AND btrim("owner") != ''
-      GROUP BY lower("owner")
-    `;
+    const usageStatsRows = await getPgUsageStatsRows(prisma);
     const keyStats = Object.fromEntries(keyStatsRows.map((row) => [row.email, row]));
     const usageStats = Object.fromEntries(usageStatsRows.map((row) => [row.email, row]));
 
@@ -243,21 +253,40 @@ export async function getOwnerBudgetState(email) {
   if (usePostgresOperationalData()) {
     const prisma = getPrisma();
     const row = await prisma.ownerUser.findUnique({ where: { email: normalized } });
+
+    // Hot path (every authenticated request): read the single ownerSpend row.
+    if (ownerSpendPgAvailable(prisma)) {
+      try {
+        const agg = await prisma.ownerSpend.findUnique({ where: { owner: normalized } });
+        return mergeOwnerStats(row, null, {
+          email: normalized,
+          requestCount: agg?.requestCount || 0,
+          spentUsd: agg?.spentUsd || 0,
+        });
+      } catch (e) {
+        disableOwnerSpendPg(e);
+      }
+    }
+
+    // Fallback until the aggregate table is applied — owner is lowercase by
+    // invariant so equality stays sargable against idx_uh_owner.
     const usageRows = await prisma.$queryRaw`
       SELECT COUNT("id")::int AS "requestCount", COALESCE(SUM("cost"), 0)::float8 AS "spentUsd"
       FROM "usageHistory"
-      WHERE lower("owner") = ${normalized}
+      WHERE "owner" = ${normalized}
     `;
     return mergeOwnerStats(row, null, { email: normalized, ...(usageRows[0] || {}) });
   }
 
   const db = await getAdapter();
   const row = db.get(`SELECT * FROM ownerUsers WHERE email = ?`, [normalized]);
-  const usage = db.get(`
-    SELECT COUNT(id) AS requestCount, COALESCE(SUM(cost), 0) AS spentUsd
-    FROM usageHistory
-    WHERE lower(owner) = ?
-  `, [normalized]);
+  // Hot path (every authenticated request): single-row lookup on the
+  // incrementally-maintained aggregate instead of SUM over usageHistory.
+  const agg = db.get(`SELECT spentUsd, requestCount FROM ownerSpend WHERE owner = ?`, [normalized]);
 
-  return mergeOwnerStats(row, null, { email: normalized, ...(usage || {}) });
+  return mergeOwnerStats(row, null, {
+    email: normalized,
+    requestCount: agg?.requestCount || 0,
+    spentUsd: agg?.spentUsd || 0,
+  });
 }

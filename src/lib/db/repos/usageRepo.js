@@ -2,6 +2,7 @@ import { EventEmitter } from "events";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getPrisma, usePostgresOperationalData } from "../../prisma.js";
+import { ownerSpendPgAvailable, disableOwnerSpendPg } from "../helpers/ownerSpendPg.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
@@ -26,7 +27,9 @@ if (!global._pendingTimers) global._pendingTimers = {};
 if (!global._recentRing) global._recentRing = { items: [], initialized: false };
 if (!global._connectionMapCache) global._connectionMapCache = { map: {}, ts: 0 };
 if (!global._apiKeyMapCache) global._apiKeyMapCache = { map: {}, ts: 0 };
+if (!global._nodeNameMapCache) global._nodeNameMapCache = { map: {}, ts: 0 };
 if (!global._statsEmitTimers) global._statsEmitTimers = { pending: null, update: null };
+if (!global._usagePruneState) global._usagePruneState = { lastRunAt: 0 };
 
 const pendingRequests = global._pendingRequests;
 const lastErrorProvider = global._lastErrorProvider;
@@ -34,7 +37,9 @@ const pendingTimers = global._pendingTimers;
 const recentRing = global._recentRing;
 const connCache = global._connectionMapCache;
 const apiKeyCache = global._apiKeyMapCache;
+const nodeNameCache = global._nodeNameMapCache;
 const statsEmitTimers = global._statsEmitTimers;
+const usagePruneState = global._usagePruneState;
 
 export const statsEmitter = global._statsEmitter;
 
@@ -218,14 +223,29 @@ function pushToRing(entry) {
 async function getConnectionMapCached() {
   if (Date.now() - connCache.ts < CONN_CACHE_TTL_MS) return connCache.map;
   try {
-    const { getProviderConnections } = await import("./connectionsRepo.js");
-    const all = await getProviderConnections();
+    // Connections always live in local SQLite (no Postgres path) — select only
+    // the naming columns instead of parsing every connection's data blob.
+    const db = await getAdapter();
+    const rows = db.all(`SELECT id, name, email FROM providerConnections`);
     const map = {};
-    for (const c of all) map[c.id] = c.name || c.email || c.id;
+    for (const c of rows) map[c.id] = c.name || c.email || c.id;
     connCache.map = map;
     connCache.ts = Date.now();
   } catch {}
   return connCache.map;
+}
+
+async function getNodeNameMapCached() {
+  if (Date.now() - nodeNameCache.ts < CONN_CACHE_TTL_MS) return nodeNameCache.map;
+  try {
+    const db = await getAdapter();
+    const rows = db.all(`SELECT id, name FROM providerNodes`);
+    const map = {};
+    for (const n of rows) if (n.id && n.name) map[n.id] = n.name;
+    nodeNameCache.map = map;
+    nodeNameCache.ts = Date.now();
+  } catch {}
+  return nodeNameCache.map;
 }
 
 async function getApiKeyMapCached() {
@@ -279,6 +299,38 @@ async function ensureRingInitialized() {
       tokens: parseJson(r.tokens, {}),
     }));
   } catch {}
+}
+
+const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+
+// Optional usageHistory retention — opt-in via settings.usageRetentionDays
+// (0/unset = keep forever). Runs at most once per hour, piggybacked on writes.
+// Owner lifetime spend survives pruning: budgets read the incrementally-
+// maintained ownerSpend table, which pruning never touches.
+async function maybePruneUsageHistory() {
+  const now = Date.now();
+  if (now - usagePruneState.lastRunAt < PRUNE_INTERVAL_MS) return;
+  usagePruneState.lastRunAt = now;
+
+  try {
+    const { getSettings } = await import("./settingsRepo.js");
+    const settings = await getSettings();
+    const days = Number(settings.usageRetentionDays) || 0;
+    if (days <= 0) return;
+
+    const cutoffIso = new Date(now - days * 86400000).toISOString();
+    if (usePostgresOperationalData()) {
+      const res = await getPrisma().usageHistory.deleteMany({ where: { timestamp: { lt: cutoffIso } } });
+      if (res.count > 0) console.log(`[usageRepo] retention: pruned ${res.count} usageHistory rows older than ${days}d`);
+      return;
+    }
+
+    const db = await getAdapter();
+    const res = db.run(`DELETE FROM usageHistory WHERE timestamp < ?`, [cutoffIso]);
+    if (res?.changes > 0) console.log(`[usageRepo] retention: pruned ${res.changes} usageHistory rows older than ${days}d`);
+  } catch (e) {
+    console.error("[usageRepo] retention prune failed:", e?.message || e);
+  }
 }
 
 async function calculateCost(provider, model, tokens) {
@@ -388,7 +440,9 @@ export async function getActiveRequests() {
     .slice(0, 20);
 
   const errorProvider = (Date.now() - lastErrorProvider.ts < 10000) ? lastErrorProvider.provider : "";
-  return { activeRequests, recentRequests, errorProvider };
+  // pending is included so SSE consumers can serve live-activity updates from
+  // this lightweight call alone, without recomputing full usage stats.
+  return { activeRequests, recentRequests, errorProvider, pending: pendingRequests };
 }
 
 export async function saveRequestUsage(entry) {
@@ -440,6 +494,24 @@ export async function saveRequestUsage(entry) {
       pushToRing(entry);
       statsEmitter.emit("update");
 
+      // Owner spend aggregate: single-statement atomic upsert (no interactive
+      // tx → immune to the P2028 issue above). Best-effort like usageDaily —
+      // if it fails, budget checks fall back to SUM(usageHistory).
+      if (owner && ownerSpendPgAvailable(prisma)) {
+        try {
+          await prisma.$executeRaw`
+            INSERT INTO "ownerSpend" ("owner", "spentUsd", "requestCount", "updatedAt")
+            VALUES (${owner}, ${entry.cost || 0}, 1, ${entry.timestamp})
+            ON CONFLICT ("owner") DO UPDATE SET
+              "spentUsd" = "ownerSpend"."spentUsd" + EXCLUDED."spentUsd",
+              "requestCount" = "ownerSpend"."requestCount" + 1,
+              "updatedAt" = EXCLUDED."updatedAt"
+          `;
+        } catch (e) {
+          disableOwnerSpendPg(e);
+        }
+      }
+
       // 2) usageDaily: best-effort aggregate update in its own short tx with
       //    generous maxWait so a busy pgbouncer pool doesn't blow up. If it
       //    still fails, history is intact and the daily summary will catch up
@@ -462,54 +534,65 @@ export async function saveRequestUsage(entry) {
       } catch (e) {
         console.error("Failed to update usageDaily aggregate (history saved OK):", e?.code || e?.message || e);
       }
+
+      maybePruneUsageHistory().catch(() => {});
       return;
     }
 
     const db = await getAdapter();
     let inserted = false;
 
+    // Deterministic dedup key over the same 7 fields the old SELECT probe
+    // matched. Enforced by UNIQUE idx_uh_dedup → INSERT OR IGNORE replaces the
+    // per-insert 7-column COALESCE lookup.
+    const dedupHash = [
+      entry.timestamp, entry.provider || "", entry.model || "",
+      entry.connectionId || "", entry.apiKey || "",
+      promptTokens, completionTokens,
+    ].join("|");
+
     // All 3 writes (history insert, daily upsert, lifetime counter) in ONE transaction.
     // better-sqlite3 is sync → no JS yield mid-transaction → no race in same process.
     db.transaction(() => {
-      const existing = db.get(
-        `SELECT id, endpoint FROM usageHistory
-         WHERE timestamp = ?
-           AND COALESCE(provider, '') = COALESCE(?, '')
-           AND COALESCE(model, '') = COALESCE(?, '')
-           AND COALESCE(connectionId, '') = COALESCE(?, '')
-           AND COALESCE(apiKey, '') = COALESCE(?, '')
-           AND promptTokens = ?
-           AND completionTokens = ?
-         ORDER BY id DESC LIMIT 1`,
-        [
-          entry.timestamp, entry.provider || null, entry.model || null,
-          entry.connectionId || null, entry.apiKey || null,
-          promptTokens, completionTokens,
-        ]
-      );
-
-      if (existing) {
-        if (!existing.endpoint && entry.endpoint) {
-          db.run(`UPDATE usageHistory SET endpoint = ? WHERE id = ?`, [entry.endpoint, existing.id]);
-        }
-        return;
-      }
-
-      db.run(
-        `INSERT INTO usageHistory(timestamp, provider, model, connectionId, apiKey, owner, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      const res = db.run(
+        `INSERT OR IGNORE INTO usageHistory(timestamp, provider, model, connectionId, apiKey, owner, endpoint, promptTokens, completionTokens, cost, status, tokens, meta, dedupHash) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           entry.timestamp, entry.provider || null, entry.model || null,
           entry.connectionId || null, entry.apiKey || null, owner, entry.endpoint || null,
           promptTokens, completionTokens, entry.cost || 0, entry.status || "ok",
-          stringifyJson(tokens), stringifyJson({}),
+          stringifyJson(tokens), stringifyJson({}), dedupHash,
         ]
       );
+
+      if (!res?.changes) {
+        // Duplicate delivery — keep the legacy behavior of backfilling endpoint
+        if (entry.endpoint) {
+          db.run(
+            `UPDATE usageHistory SET endpoint = ? WHERE dedupHash = ? AND (endpoint IS NULL OR endpoint = '')`,
+            [entry.endpoint, dedupHash]
+          );
+        }
+        return;
+      }
 
       const dateKey = getLocalDateKey(entry.timestamp);
       const row = db.get(`SELECT data FROM usageDaily WHERE dateKey = ?`, [dateKey]);
       const day = row ? parseJson(row.data, {}) : createEmptyDay();
       aggregateEntryToDay(day, entry);
       db.run(`INSERT INTO usageDaily(dateKey, data) VALUES(?, ?) ON CONFLICT(dateKey) DO UPDATE SET data = excluded.data`, [dateKey, stringifyJson(day)]);
+
+      // Owner spend aggregate — same transaction as the history insert, so the
+      // budget counter can never drift from what actually landed in history.
+      if (owner) {
+        db.run(
+          `INSERT INTO ownerSpend(owner, spentUsd, requestCount, updatedAt) VALUES(?, ?, 1, ?)
+           ON CONFLICT(owner) DO UPDATE SET
+             spentUsd = spentUsd + excluded.spentUsd,
+             requestCount = requestCount + 1,
+             updatedAt = excluded.updatedAt`,
+          [owner, entry.cost || 0, entry.timestamp]
+        );
+      }
 
       // Atomic counter increment in same transaction
       const cur = db.get(`SELECT value FROM _meta WHERE key = 'totalRequestsLifetime'`);
@@ -522,16 +605,29 @@ export async function saveRequestUsage(entry) {
       pushToRing(entry);
       scheduleStatsEvent("update", 250);
     }
+
+    maybePruneUsageHistory().catch(() => {});
   } catch (e) {
     console.error("Failed to save usage stats:", e);
   }
 }
 
+const HISTORY_DEFAULT_LIMIT = 500;
+const HISTORY_MAX_LIMIT = 5000;
+
+// Paginated: pages walk backwards from the newest row (offset 0 = most recent
+// `limit` rows), but each page is returned oldest-first to keep the historical
+// ORDER BY id ASC contract for consumers that iterate chronologically.
 export async function getUsageHistory(filter = {}) {
+  const limit = Math.min(Math.max(parseInt(filter.limit, 10) || HISTORY_DEFAULT_LIMIT, 1), HISTORY_MAX_LIMIT);
+  const offset = Math.max(parseInt(filter.offset, 10) || 0, 0);
+
   if (usePostgresOperationalData()) {
     const rows = await getPrisma().usageHistory.findMany({
       where: buildUsageWhere(filter),
-      orderBy: { id: "asc" },
+      orderBy: { id: "desc" },
+      take: limit,
+      skip: offset,
       select: {
         timestamp: true,
         provider: true,
@@ -544,7 +640,7 @@ export async function getUsageHistory(filter = {}) {
         tokens: true,
       },
     });
-    return rows.map(rowToUsageEntry);
+    return rows.reverse().map(rowToUsageEntry);
   }
 
   const db = await getAdapter();
@@ -557,7 +653,11 @@ export async function getUsageHistory(filter = {}) {
   if (filter.endDate) { conds.push("timestamp <= ?"); params.push(new Date(filter.endDate).toISOString()); }
 
   const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
-  const rows = db.all(`SELECT timestamp, provider, model, connectionId, apiKey, endpoint, cost, status, tokens FROM usageHistory ${where} ORDER BY id ASC`, params);
+  const rows = db.all(
+    `SELECT timestamp, provider, model, connectionId, apiKey, endpoint, cost, status, tokens FROM usageHistory ${where} ORDER BY id DESC LIMIT ? OFFSET ?`,
+    [...params, limit, offset]
+  );
+  rows.reverse();
 
   return rows.map((r) => ({
     timestamp: r.timestamp, provider: r.provider, model: r.model,
@@ -591,27 +691,13 @@ export async function getUsageStats(period = "all") {
   const usingPostgres = usePostgresOperationalData();
   const prisma = usingPostgres ? getPrisma() : null;
 
-  const [{ getProviderConnections }, { getApiKeys }, { getProviderNodes }] = await Promise.all([
-    import("./connectionsRepo.js"),
-    import("./apiKeysRepo.js"),
-    import("./nodesRepo.js"),
+  // Lookup maps are TTL-cached (30s) — the dashboard polls this endpoint, so
+  // reloading connections/apiKeys/nodes fresh on every call was pure overhead.
+  const [connectionMap, apiKeyMap, providerNodeNameMap] = await Promise.all([
+    getConnectionMapCached(),
+    getApiKeyMapCached(),
+    getNodeNameMapCached(),
   ]);
-
-  let allConnections = [];
-  try { allConnections = await getProviderConnections(); } catch {}
-  const connectionMap = {};
-  for (const c of allConnections) connectionMap[c.id] = c.name || c.email || c.id;
-
-  const providerNodeNameMap = {};
-  try {
-    const nodes = await getProviderNodes();
-    for (const n of nodes) if (n.id && n.name) providerNodeNameMap[n.id] = n.name;
-  } catch {}
-
-  let allApiKeys = [];
-  try { allApiKeys = await getApiKeys(); } catch {}
-  const apiKeyMap = {};
-  for (const k of allApiKeys) apiKeyMap[k.key] = { name: k.name, id: k.id, createdAt: k.createdAt };
 
   // recentRequests from live history (last 100 entries enough for 20 deduped)
   const recentRows = usingPostgres
@@ -795,23 +881,25 @@ export async function getUsageStats(period = "all") {
       }
     }
 
-    // Overlay precise lastUsed timestamps from history
+    // Overlay precise lastUsed timestamps from history. Aggregated in SQL
+    // (MAX per 5-tuple) instead of streaming every row to JS — for period
+    // "all" the old cutoff=0 fetch was a full-table materialization.
     const overlayCutoff = maxDays ? Date.now() - maxDays * 86400000 : 0;
+    const overlayIso = new Date(overlayCutoff).toISOString();
     const histRows = usingPostgres
-      ? await prisma.usageHistory.findMany({
-        where: buildTimestampWhere(new Date(overlayCutoff).toISOString()),
-        select: {
-          timestamp: true,
-          provider: true,
-          model: true,
-          connectionId: true,
-          apiKey: true,
-          endpoint: true,
-        },
-      })
+      ? (await prisma.usageHistory.groupBy({
+        by: ["provider", "model", "connectionId", "apiKey", "endpoint"],
+        where: buildTimestampWhere(overlayIso),
+        _max: { timestamp: true },
+      })).map((g) => ({
+        provider: g.provider, model: g.model, connectionId: g.connectionId,
+        apiKey: g.apiKey, endpoint: g.endpoint, timestamp: g._max.timestamp,
+      }))
       : db.all(
-        `SELECT timestamp, provider, model, connectionId, apiKey, endpoint FROM usageHistory WHERE timestamp >= ?`,
-        [new Date(overlayCutoff).toISOString()]
+        `SELECT provider, model, connectionId, apiKey, endpoint, MAX(timestamp) AS timestamp
+         FROM usageHistory WHERE timestamp >= ?
+         GROUP BY provider, model, connectionId, apiKey, endpoint`,
+        [overlayIso]
       );
     for (const e of histRows) {
       const ts = e.timestamp;
@@ -843,33 +931,71 @@ export async function getUsageStats(period = "all") {
     } else {
       cutoff = new Date(Date.now() - PERIOD_MS["24h"]).toISOString();
     }
-    const filtered = usingPostgres
-      ? await prisma.usageHistory.findMany({
-        where: buildTimestampWhere(cutoff),
-        select: {
-          timestamp: true,
-          provider: true,
-          model: true,
-          connectionId: true,
-          apiKey: true,
-          endpoint: true,
-          promptTokens: true,
-          completionTokens: true,
-          cost: true,
-          tokens: true,
-        },
-      })
-      : db.all(
-        `SELECT timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, tokens FROM usageHistory WHERE timestamp >= ?`,
-        [cutoff]
-      );
+    // Fast path (SQLite): aggregate in SQL grouped by the full display tuple —
+    // rows transferred drop from one-per-request to one-per-distinct-combo.
+    // cachedTokens (and the legacy token fallbacks) live inside the tokens
+    // JSON blob, so this needs the JSON1 functions; if the active adapter
+    // lacks them (or a blob is malformed), fall back to the JS aggregation.
+    let grouped = null;
+    if (!usingPostgres) {
+      try {
+        grouped = db.all(
+          `SELECT provider, model, connectionId, apiKey, endpoint,
+             COUNT(*) AS requests,
+             SUM(COALESCE(NULLIF(promptTokens, 0), CAST(json_extract(tokens, '$.prompt_tokens') AS INTEGER), CAST(json_extract(tokens, '$.input_tokens') AS INTEGER), 0)) AS promptTokens,
+             SUM(COALESCE(NULLIF(completionTokens, 0), CAST(json_extract(tokens, '$.completion_tokens') AS INTEGER), CAST(json_extract(tokens, '$.output_tokens') AS INTEGER), 0)) AS completionTokens,
+             SUM(COALESCE(CAST(json_extract(tokens, '$.cached_tokens') AS INTEGER), CAST(json_extract(tokens, '$.cache_read_input_tokens') AS INTEGER), 0)) AS cachedTokens,
+             SUM(COALESCE(cost, 0)) AS cost,
+             MAX(timestamp) AS lastUsed
+           FROM usageHistory WHERE timestamp >= ?
+           GROUP BY provider, model, connectionId, apiKey, endpoint`,
+          [cutoff]
+        );
+      } catch { grouped = null; }
+    }
 
-    for (const r of filtered) {
-      const tokens = parseJson(r.tokens, {}) || {};
-      // Prefer pre-normalized DB columns; fall back to JSON blob (handles both prompt_tokens and input_tokens)
-      const promptTokens = r.promptTokens || tokens.prompt_tokens || tokens.input_tokens || 0;
-      const completionTokens = r.completionTokens || tokens.completion_tokens || tokens.output_tokens || 0;
-      const cachedTokens = tokens.cached_tokens || tokens.cache_read_input_tokens || 0;
+    if (grouped === null) {
+      const filtered = usingPostgres
+        ? await prisma.usageHistory.findMany({
+          where: buildTimestampWhere(cutoff),
+          select: {
+            timestamp: true,
+            provider: true,
+            model: true,
+            connectionId: true,
+            apiKey: true,
+            endpoint: true,
+            promptTokens: true,
+            completionTokens: true,
+            cost: true,
+            tokens: true,
+          },
+        })
+        : db.all(
+          `SELECT timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, tokens FROM usageHistory WHERE timestamp >= ?`,
+          [cutoff]
+        );
+      grouped = filtered.map((r) => {
+        const tokens = parseJson(r.tokens, {}) || {};
+        // Prefer pre-normalized DB columns; fall back to JSON blob (handles both prompt_tokens and input_tokens)
+        return {
+          provider: r.provider, model: r.model, connectionId: r.connectionId,
+          apiKey: r.apiKey, endpoint: r.endpoint,
+          requests: 1,
+          promptTokens: r.promptTokens || tokens.prompt_tokens || tokens.input_tokens || 0,
+          completionTokens: r.completionTokens || tokens.completion_tokens || tokens.output_tokens || 0,
+          cachedTokens: tokens.cached_tokens || tokens.cache_read_input_tokens || 0,
+          cost: r.cost || 0,
+          lastUsed: r.timestamp,
+        };
+      });
+    }
+
+    for (const r of grouped) {
+      const requests = r.requests || 1;
+      const promptTokens = r.promptTokens || 0;
+      const completionTokens = r.completionTokens || 0;
+      const cachedTokens = r.cachedTokens || 0;
       const entryCost = r.cost || 0;
       const providerDisplayName = providerNodeNameMap[r.provider] || r.provider;
 
@@ -879,7 +1005,7 @@ export async function getUsageStats(period = "all") {
       stats.totalCost += entryCost;
 
       if (!stats.byProvider[r.provider]) stats.byProvider[r.provider] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0 };
-      stats.byProvider[r.provider].requests++;
+      stats.byProvider[r.provider].requests += requests;
       stats.byProvider[r.provider].promptTokens += promptTokens;
       stats.byProvider[r.provider].completionTokens += completionTokens;
       stats.byProvider[r.provider].cachedTokens += cachedTokens;
@@ -887,27 +1013,27 @@ export async function getUsageStats(period = "all") {
 
       const modelKey = r.provider ? `${r.model} (${r.provider})` : r.model;
       if (!stats.byModel[modelKey]) {
-        stats.byModel[modelKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, lastUsed: r.timestamp };
+        stats.byModel[modelKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, lastUsed: r.lastUsed };
       }
-      stats.byModel[modelKey].requests++;
+      stats.byModel[modelKey].requests += requests;
       stats.byModel[modelKey].promptTokens += promptTokens;
       stats.byModel[modelKey].completionTokens += completionTokens;
       stats.byModel[modelKey].cachedTokens += cachedTokens;
       stats.byModel[modelKey].cost += entryCost;
-      if (new Date(r.timestamp) > new Date(stats.byModel[modelKey].lastUsed)) stats.byModel[modelKey].lastUsed = r.timestamp;
+      if (new Date(r.lastUsed) > new Date(stats.byModel[modelKey].lastUsed)) stats.byModel[modelKey].lastUsed = r.lastUsed;
 
       if (r.connectionId) {
         const accountName = connectionMap[r.connectionId] || `Account ${r.connectionId.slice(0, 8)}...`;
         const accountKey = `${r.model} (${r.provider} - ${accountName})`;
         if (!stats.byAccount[accountKey]) {
-          stats.byAccount[accountKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, connectionId: r.connectionId, accountName, lastUsed: r.timestamp };
+          stats.byAccount[accountKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, connectionId: r.connectionId, accountName, lastUsed: r.lastUsed };
         }
-        stats.byAccount[accountKey].requests++;
+        stats.byAccount[accountKey].requests += requests;
         stats.byAccount[accountKey].promptTokens += promptTokens;
         stats.byAccount[accountKey].completionTokens += completionTokens;
         stats.byAccount[accountKey].cachedTokens += cachedTokens;
         stats.byAccount[accountKey].cost += entryCost;
-        if (new Date(r.timestamp) > new Date(stats.byAccount[accountKey].lastUsed)) stats.byAccount[accountKey].lastUsed = r.timestamp;
+        if (new Date(r.lastUsed) > new Date(stats.byAccount[accountKey].lastUsed)) stats.byAccount[accountKey].lastUsed = r.lastUsed;
       }
 
       if (r.apiKey && typeof r.apiKey === "string") {
@@ -916,28 +1042,28 @@ export async function getUsageStats(period = "all") {
         const apiKeyMasked = maskApiKey(r.apiKey);
         const akKey = `${apiKeyMasked}|${r.model}|${r.provider || "unknown"}`;
         if (!stats.byApiKey[akKey]) {
-          stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey: apiKeyMasked, lastUsed: r.timestamp };
+          stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey: apiKeyMasked, lastUsed: r.lastUsed };
         }
         const ake = stats.byApiKey[akKey];
-        ake.requests++; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost;
-        if (new Date(r.timestamp) > new Date(ake.lastUsed)) ake.lastUsed = r.timestamp;
+        ake.requests += requests; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost;
+        if (new Date(r.lastUsed) > new Date(ake.lastUsed)) ake.lastUsed = r.lastUsed;
       } else {
         if (!stats.byApiKey["local-no-key"]) {
-          stats.byApiKey["local-no-key"] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked: null, keyName: "Local (No API Key)", apiKeyKey: "local-no-key", lastUsed: r.timestamp };
+          stats.byApiKey["local-no-key"] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked: null, keyName: "Local (No API Key)", apiKeyKey: "local-no-key", lastUsed: r.lastUsed };
         }
         const ake = stats.byApiKey["local-no-key"];
-        ake.requests++; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost;
-        if (new Date(r.timestamp) > new Date(ake.lastUsed)) ake.lastUsed = r.timestamp;
+        ake.requests += requests; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost;
+        if (new Date(r.lastUsed) > new Date(ake.lastUsed)) ake.lastUsed = r.lastUsed;
       }
 
       const endpoint = r.endpoint || "Unknown";
       const epKey = `${endpoint}|${r.model}|${r.provider || "unknown"}`;
       if (!stats.byEndpoint[epKey]) {
-        stats.byEndpoint[epKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, endpoint, rawModel: r.model, provider: providerDisplayName, lastUsed: r.timestamp };
+        stats.byEndpoint[epKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, endpoint, rawModel: r.model, provider: providerDisplayName, lastUsed: r.lastUsed };
       }
       const epe = stats.byEndpoint[epKey];
-      epe.requests++; epe.promptTokens += promptTokens; epe.completionTokens += completionTokens; epe.cachedTokens += cachedTokens; epe.cost += entryCost;
-      if (new Date(r.timestamp) > new Date(epe.lastUsed)) epe.lastUsed = r.timestamp;
+      epe.requests += requests; epe.promptTokens += promptTokens; epe.completionTokens += completionTokens; epe.cachedTokens += cachedTokens; epe.cost += entryCost;
+      if (new Date(r.lastUsed) > new Date(epe.lastUsed)) epe.lastUsed = r.lastUsed;
     }
   }
 
@@ -1008,14 +1134,28 @@ export async function getChartData(period = "7d") {
     return buckets;
   }
 
-  const bucketCount = period === "7d" ? 7 : period === "30d" ? 30 : 60;
+  let bucketCount = period === "7d" ? 7 : period === "30d" ? 30 : 60;
   const today = new Date();
   const labelFn = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
-  // Build map of dateKey → day data
-  const dayRows = await loadDaysInRange(db, bucketCount);
+  // Build map of dateKey → day data. "all" loads every daily summary and
+  // spans one bucket per day from the earliest recorded day through today.
+  const dayRows = await loadDaysInRange(db, period === "all" ? null : bucketCount);
   const dayMap = {};
   for (const r of dayRows) dayMap[r.dateKey] = parseJson(r.data, {});
+
+  if (period === "all") {
+    const keys = Object.keys(dayMap).sort();
+    if (keys.length) {
+      const [y, m, d] = keys[0].split("-").map(Number);
+      const earliest = new Date(y, m - 1, d);
+      const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      // Math.round absorbs DST hour shifts in the local-date diff
+      bucketCount = Math.max(1, Math.round((startOfToday - earliest) / 86400000) + 1);
+    } else {
+      bucketCount = 7;
+    }
+  }
 
   return Array.from({ length: bucketCount }, (_, i) => {
     const d = new Date(today);
@@ -1038,6 +1178,14 @@ export async function resetUsageData() {
       prisma.usageDaily.deleteMany(),
     ]);
 
+    if (ownerSpendPgAvailable(prisma)) {
+      try {
+        await prisma.ownerSpend.deleteMany();
+      } catch (e) {
+        disableOwnerSpendPg(e);
+      }
+    }
+
     try {
       const db = await getAdapter();
       db.run(`DELETE FROM _meta WHERE key = 'totalRequestsLifetime'`);
@@ -1057,6 +1205,7 @@ export async function resetUsageData() {
   db.transaction(() => {
     db.run(`DELETE FROM usageHistory`);
     db.run(`DELETE FROM usageDaily`);
+    db.run(`DELETE FROM ownerSpend`);
     db.run(`DELETE FROM _meta WHERE key = 'totalRequestsLifetime'`);
     try {
       db.run(`DELETE FROM sqlite_sequence WHERE name = 'usageHistory'`);
@@ -1092,6 +1241,21 @@ export async function resetUsageForOwner(email) {
       return result.count;
     });
 
+    // Recompute this owner's spend aggregate from what's left (outside the tx
+    // so an aggregate hiccup can't roll back the reset itself).
+    if (ownerSpendPgAvailable(prisma)) {
+      try {
+        await prisma.$executeRaw`DELETE FROM "ownerSpend" WHERE "owner" = ${normalized}`;
+        await prisma.$executeRaw`
+          INSERT INTO "ownerSpend" ("owner", "spentUsd", "requestCount", "updatedAt")
+          SELECT "owner", COALESCE(SUM("cost"), 0), COUNT("id")::int, ${new Date().toISOString()}
+          FROM "usageHistory" WHERE "owner" = ${normalized} GROUP BY "owner"
+        `;
+      } catch (e) {
+        disableOwnerSpendPg(e);
+      }
+    }
+
     const keySet = new Set(keys);
     recentRing.items = recentRing.items.filter((item) => !keySet.has(item.apiKey));
     recentRing.initialized = true;
@@ -1116,6 +1280,14 @@ export async function resetUsageForOwner(email) {
     const result = db.run(`DELETE FROM usageHistory WHERE apiKey IN (${placeholders})`, keys);
     deleted = result?.changes ?? 0;
     rebuildUsageDailyFromHistory(db);
+    // Recompute this owner's spend aggregate from the remaining history
+    db.run(`DELETE FROM ownerSpend WHERE owner = ?`, [normalized]);
+    db.run(
+      `INSERT INTO ownerSpend(owner, spentUsd, requestCount, updatedAt)
+       SELECT owner, COALESCE(SUM(cost), 0), COUNT(id), ?
+       FROM usageHistory WHERE owner = ? GROUP BY owner`,
+      [new Date().toISOString(), normalized]
+    );
   });
 
   const keySet = new Set(keys);
