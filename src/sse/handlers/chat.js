@@ -8,8 +8,8 @@ import {
   getApiKeyValidationError,
 } from "../services/auth.js";
 import { cacheClaudeHeaders } from "open-sse/utils/claudeHeaderCache.js";
-import { getSettings } from "@/lib/localDb";
-import { getModelInfo, getComboModels, parseModel } from "../services/model.js";
+import { getSettings, getCombos } from "@/lib/localDb";
+import { getModelInfo, getComboModels, parseModel, resolveModelAlias } from "../services/model.js";
 import { getEnabledByProvider, getEnabledProviders, isProviderEnabled } from "@/lib/disabledModelsDb";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
@@ -99,7 +99,7 @@ export async function handleChat(request, clientRawRequest = null) {
             const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
             cleanRawReq = { ...clientRawRequest, body: cleanBody };
           }
-          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, true);
         },
         log,
         comboName: modelStr,
@@ -113,7 +113,7 @@ export async function handleChat(request, clientRawRequest = null) {
     return handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+      handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, true),
       log,
       comboName: modelStr,
       comboStrategy,
@@ -127,13 +127,38 @@ export async function handleChat(request, clientRawRequest = null) {
 
 /**
  * Handle single model chat request
+ * @param {boolean} fromCombo - true when this call is a combo-expansion step; direct
+ *   provider/model requests from clients are rejected when LLM combos are configured.
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, fromCombo = false) {
   const modelInfo = await getModelInfo(modelStr);
 
   // Enforce per-provider enabled allowlist set via the dashboard
   const parsed = parseModel(modelStr);
   const providerAlias = parsed?.providerAlias;
+
+  // When LLM combos are configured, /v1/models only advertises combo names —
+  // block requests that don't match the published list: direct provider/model
+  // access, and bare names that would only resolve via model-name prefix
+  // inference (e.g. a deleted combo "gpt-x" would otherwise be guessed as
+  // provider "openai" and fail with a misleading credentials error).
+  // Combo-expansion calls (fromCombo) bypass this so fallback keeps working.
+  if (!fromCombo) {
+    let combos = [];
+    try {
+      combos = await getCombos();
+    } catch { /* fail-open: DB unavailable must not block routing */ }
+    if (combos.some((c) => !c.kind || c.kind === "llm")) {
+      const isComboName = combos.some((c) => c.name === modelStr);
+      const isRegisteredAlias = !providerAlias && !isComboName
+        && !!(await resolveModelAlias(parsed.model));
+      if (!isComboName && !isRegisteredAlias) {
+        log.warn("CHAT", `Unlisted model blocked: "${modelStr}"`);
+        return errorResponse(HTTP_STATUS.FORBIDDEN, "This model Unavailable, check yogathedev.com/ai/models");
+      }
+    }
+  }
+
   if (providerAlias) {
     const [enabledModels, enabledProviders] = await Promise.all([
       getEnabledByProvider(providerAlias),
@@ -170,7 +195,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
               cleanRawReq = { ...clientRawRequest, body: cleanBody };
             }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, true);
           },
           log,
           comboName: modelStr,
@@ -184,7 +209,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       return handleComboChat({
         body,
         models: comboModels,
-        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, true),
         log,
         comboName: modelStr,
         comboStrategy,
