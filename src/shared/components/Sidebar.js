@@ -24,7 +24,6 @@ const navItems = [
   { href: "/dashboard/combos", label: "Combos", icon: "layers" },
   { href: "/dashboard/usage", label: "Usage", icon: "bar_chart" },
   { href: "/dashboard/quota", label: "Quota Tracker", icon: "data_usage" },
-  { href: "/dashboard/token-saver", label: "Token Saver", icon: "savings" },
   // { href: "/dashboard/pxpipe", label: "PXPIPE", icon: "image" },
 ];
 
@@ -43,6 +42,7 @@ const adminItems = [
   { href: "/dashboard/models", label: "Models", icon: "model_training" },
   { href: "/dashboard/pricing", label: "Pricing", icon: "sell" },
   { href: "/dashboard/voucher", label: "Voucher", icon: "confirmation_number" },
+  { href: "/dashboard/temp-key", label: "Temp", icon: "timer" },
 ];
 
 export default function Sidebar({ onClose }) {
@@ -296,20 +296,6 @@ export default function Sidebar({ onClose }) {
                 </Link>
               ) : null;
             })}
-
-            {/* Remote */}
-            <button
-              onClick={() => setShowRemoteModal(true)}
-              className={cn(
-                "flex items-center gap-3 px-3 py-1 rounded-lg transition-all group w-full",
-                "text-text-muted hover:bg-surface-2 hover:text-text-main"
-              )}
-            >
-              <span className="material-symbols-outlined text-[18px] group-hover:text-primary transition-colors">
-                computer
-              </span>
-              <span className="text-[13px] font-medium">Remote</span>
-            </button>
 
             {/* Settings */}
             <Link

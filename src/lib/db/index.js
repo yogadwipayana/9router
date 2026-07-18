@@ -49,6 +49,11 @@ export {
   getVouchers, getVoucherByCode, createVoucher, deleteVoucher, deleteVouchers, redeemVoucher,
 } from "./repos/vouchersRepo.js";
 
+// Temp API keys (time + cost limited, Postgres-only)
+export {
+  getTempApiKeys, createTempApiKey, deleteTempApiKey, deleteTempApiKeys,
+} from "./repos/tempApiKeysRepo.js";
+
 // Aliases (model + custom + mitm)
 export {
   getModelAliases, setModelAlias, deleteModelAlias,

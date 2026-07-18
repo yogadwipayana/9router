@@ -115,4 +115,6 @@ supabase-db:
     - '5432:5432'
 
 npx prisma db execute --file prisma/manual/add-owner-spend.sql
+npx prisma db execute --file prisma/manual/resync-owner-spend.sql
+npx prisma db execute --file prisma/manual/add-temp-api-keys.sql
 npx prisma generate

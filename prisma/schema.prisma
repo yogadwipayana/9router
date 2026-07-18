@@ -123,3 +123,46 @@ model Voucher {
   @@index([status], map: "idx_voucher_status")
   @@map("vouchers")
 }
+
+// Temporary, standalone API keys with a cost cap and a lifetime that starts on
+// first use. Postgres-only (like vouchers). spentUsd/requestCount are
+// incrementally maintained by saveRequestUsage. firstUsedAt/expiresAt are set
+// lazily on the first authorized request (expiresAt = firstUsedAt + duration).
+// Created MANUALLY (migrate history is broken): apply
+// prisma/manual/add-temp-api-keys.sql via `prisma db execute`, then `prisma generate`.
+model TempApiKey {
+  id              String  @id
+  key             String  @unique
+  name            String?
+  budgetUsd       Float
+  spentUsd        Float   @default(0)
+  requestCount    Int     @default(0)
+  durationSeconds Int
+  firstUsedAt     String?
+  expiresAt       String?
+  isActive        Int?    @default(1)
+  note            String?
+  createdAt       String
+  updatedAt       String
+
+  @@index([key], map: "idx_tak_key")
+  @@map("tempApiKeys")
+}
+
+model TempUsageHistory {
+  id               Int     @id @default(autoincrement())
+  tempKeyId        String
+  timestamp        String
+  provider         String?
+  model            String?
+  endpoint         String?
+  promptTokens     Int?    @default(0)
+  completionTokens Int?    @default(0)
+  cost             Float?  @default(0)
+  status           String?
+  tokens           String?
+
+  @@index([tempKeyId], map: "idx_tuh_key")
+  @@index([timestamp], map: "idx_tuh_ts")
+  @@map("tempUsageHistory")
+}

@@ -27,6 +27,7 @@ if (!global._pendingTimers) global._pendingTimers = {};
 if (!global._recentRing) global._recentRing = { items: [], initialized: false };
 if (!global._connectionMapCache) global._connectionMapCache = { map: {}, ts: 0 };
 if (!global._apiKeyMapCache) global._apiKeyMapCache = { map: {}, ts: 0 };
+if (!global._tempApiKeyMapCache) global._tempApiKeyMapCache = { map: {}, ts: 0 };
 if (!global._nodeNameMapCache) global._nodeNameMapCache = { map: {}, ts: 0 };
 if (!global._statsEmitTimers) global._statsEmitTimers = { pending: null, update: null };
 if (!global._usagePruneState) global._usagePruneState = { lastRunAt: 0 };
@@ -37,6 +38,7 @@ const pendingTimers = global._pendingTimers;
 const recentRing = global._recentRing;
 const connCache = global._connectionMapCache;
 const apiKeyCache = global._apiKeyMapCache;
+const tempApiKeyCache = global._tempApiKeyMapCache;
 const nodeNameCache = global._nodeNameMapCache;
 const statsEmitTimers = global._statsEmitTimers;
 const usagePruneState = global._usagePruneState;
@@ -255,10 +257,56 @@ async function getApiKeyMapCached() {
     const all = await getApiKeys();
     const map = {};
     for (const k of all) map[k.key] = { name: k.name, id: k.id, createdAt: k.createdAt, owner: k.owner || null };
+
+    // Temp keys (Postgres-only): surface a recognizable "Temp: <name>" label in
+    // the usage dashboard. Empty name → leave null so consumers fall back to the
+    // masked key. owner stays null (temp keys are standalone). Best-effort: a
+    // failure here just means temp rows show masked, like before.
+    if (usePostgresOperationalData()) {
+      try {
+        const { getTempApiKeys } = await import("./tempApiKeysRepo.js");
+        const temps = await getTempApiKeys();
+        for (const t of temps) {
+          map[t.key] = {
+            name: t.name ? `Temp: ${t.name}` : null,
+            id: t.id,
+            createdAt: t.createdAt,
+            owner: null,
+            isTemp: true,
+          };
+        }
+      } catch {}
+    }
+
     apiKeyCache.map = map;
     apiKeyCache.ts = Date.now();
   } catch {}
   return apiKeyCache.map;
+}
+
+// Temp API keys (Postgres-only). Maps key → tempKeyId so saveRequestUsage can
+// attribute spend without a per-request DB lookup. Invalidated on create/delete
+// so a brand-new key's very first request is still recorded.
+export function invalidateTempApiKeyCache() {
+  tempApiKeyCache.ts = 0;
+}
+
+async function getTempApiKeyMapCached() {
+  if (Date.now() - tempApiKeyCache.ts < CONN_CACHE_TTL_MS) return tempApiKeyCache.map;
+  try {
+    if (!usePostgresOperationalData()) {
+      tempApiKeyCache.map = {};
+      tempApiKeyCache.ts = Date.now();
+      return tempApiKeyCache.map;
+    }
+    const { getTempApiKeys } = await import("./tempApiKeysRepo.js");
+    const all = await getTempApiKeys();
+    const map = {};
+    for (const k of all) map[k.key] = k.id;
+    tempApiKeyCache.map = map;
+    tempApiKeyCache.ts = Date.now();
+  } catch {}
+  return tempApiKeyCache.map;
 }
 
 function resolveKeyName(apiKey, apiKeyMap) {
@@ -533,6 +581,21 @@ export async function saveRequestUsage(entry) {
         );
       } catch (e) {
         console.error("Failed to update usageDaily aggregate (history saved OK):", e?.code || e?.message || e);
+      }
+
+      // Temp key spend + history (Postgres-only). Attribute to the temp key if
+      // this request used one. Best-effort — never blocks the usage write.
+      if (entry.apiKey) {
+        try {
+          const tempMap = await getTempApiKeyMapCached();
+          const tempKeyId = tempMap[entry.apiKey];
+          if (tempKeyId) {
+            const { recordTempKeyUsage } = await import("./tempApiKeysRepo.js");
+            await recordTempKeyUsage(tempKeyId, { ...entry, cost: entry.cost || 0 });
+          }
+        } catch (e) {
+          console.error("Failed to record temp key usage:", e?.message || e);
+        }
       }
 
       maybePruneUsageHistory().catch(() => {});

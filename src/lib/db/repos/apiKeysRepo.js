@@ -42,7 +42,13 @@ export async function getApiKeyAccessState(key) {
   if (usePostgresOperationalData()) {
     const row = await getPrisma().apiKey.findUnique({ where: { key } });
     const apiKey = rowToKey(row);
-    if (!apiKey) return { valid: false, reason: "not_found" };
+    if (!apiKey) {
+      // Not a normal key — it may be a temporary (time/cost-limited) key.
+      const { getTempApiKeyAccessState } = await import("./tempApiKeysRepo.js");
+      const tempState = await getTempApiKeyAccessState(key);
+      if (tempState) return tempState;
+      return { valid: false, reason: "not_found" };
+    }
     if (apiKey.isActive === false) return { valid: false, reason: "key_paused", apiKey };
     if (!apiKey.owner) return { valid: true, apiKey, owner: null };
 
