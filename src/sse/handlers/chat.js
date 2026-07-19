@@ -24,6 +24,11 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 
+// Client-facing error for models not on the published list. Also used for
+// combo-expansion steps that fail the enabled allowlist, so internal
+// provider/model names never leak to clients when a whole combo is exhausted.
+const UNLISTED_MODEL_MESSAGE = "This model Unavailable, check yogathedev.com/ai/models";
+
 /**
  * Handle chat completion request
  * Supports: OpenAI, Claude, Gemini, OpenAI Responses API formats
@@ -154,7 +159,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         && !!(await resolveModelAlias(parsed.model));
       if (!isComboName && !isRegisteredAlias) {
         log.warn("CHAT", `Unlisted model blocked: "${modelStr}"`);
-        return errorResponse(HTTP_STATUS.FORBIDDEN, "This model Unavailable, check yogathedev.com/ai/models");
+        return errorResponse(HTTP_STATUS.FORBIDDEN, UNLISTED_MODEL_MESSAGE);
       }
     }
   }
@@ -164,13 +169,20 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       getEnabledByProvider(providerAlias),
       getEnabledProviders(),
     ]);
+    // Combo-expansion steps report the clean client-facing message: if every
+    // step of a combo is disabled, the client must see "unavailable", not the
+    // internal provider/model name of the last failed step.
     if (!isProviderEnabled(enabledProviders, providerAlias)) {
       log.warn("CHAT", `Provider "${providerAlias}" is not enabled`);
-      return errorResponse(HTTP_STATUS.NOT_FOUND, `The model '${modelStr}' does not exist`);
+      return fromCombo
+        ? errorResponse(HTTP_STATUS.FORBIDDEN, UNLISTED_MODEL_MESSAGE)
+        : errorResponse(HTTP_STATUS.NOT_FOUND, `The model '${modelStr}' does not exist`);
     }
     if (!enabledModels.includes(modelInfo.model)) {
       log.warn("CHAT", `Model "${modelStr}" is not enabled`);
-      return errorResponse(HTTP_STATUS.NOT_FOUND, `The model '${modelStr}' does not exist`);
+      return fromCombo
+        ? errorResponse(HTTP_STATUS.FORBIDDEN, UNLISTED_MODEL_MESSAGE)
+        : errorResponse(HTTP_STATUS.NOT_FOUND, `The model '${modelStr}' does not exist`);
     }
   }
 
