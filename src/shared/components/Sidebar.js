@@ -42,6 +42,7 @@ const adminItems = [
   { href: "/dashboard/models", label: "Models", icon: "model_training" },
   { href: "/dashboard/pricing", label: "Pricing", icon: "sell" },
   { href: "/dashboard/voucher", label: "Voucher", icon: "confirmation_number" },
+  { href: "/dashboard/balance", label: "Balance", icon: "account_balance_wallet" },
   { href: "/dashboard/temp-key", label: "Temp", icon: "timer" },
 ];
 

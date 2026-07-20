@@ -117,5 +117,7 @@ supabase-db:
 npx prisma db execute --file prisma/manual/add-owner-spend.sql
 npx prisma db execute --file prisma/manual/resync-owner-spend.sql
 npx prisma db execute --file prisma/manual/add-temp-api-keys.sql
+
 npx prisma db execute --file prisma/manual/add-voucher-kind.sql
+
 npx prisma generate
