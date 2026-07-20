@@ -19,6 +19,27 @@ function formatUsd(value) {
   }).format(Number(value || 0));
 }
 
+function formatIdr(value) {
+  return `Rp${Number(value || 0).toLocaleString("id-ID")}`;
+}
+
+/** Vouchers carry either a USD or a rupiah value — never both. */
+function voucherKind(voucher) {
+  return voucher.kind === "sms" ? "sms" : "ai";
+}
+
+function voucherAmount(voucher) {
+  return voucherKind(voucher) === "sms"
+    ? Number(voucher.amountIdr || 0)
+    : Number(voucher.amountUsd || 0);
+}
+
+function formatVoucherAmount(voucher) {
+  return voucherKind(voucher) === "sms"
+    ? formatIdr(voucher.amountIdr)
+    : formatUsd(voucher.amountUsd);
+}
+
 function formatDate(value) {
   if (!value) return "—";
   return new Date(value).toLocaleString();
@@ -29,6 +50,17 @@ const STATUS_OPTIONS = [
   { value: "active", label: "Active" },
   { value: "redeemed", label: "Redeemed" },
 ];
+
+const KIND_OPTIONS = [
+  { value: "all", label: "All products" },
+  { value: "ai", label: "AI Router" },
+  { value: "sms", label: "SMS OTP" },
+];
+
+const KIND_META = {
+  ai: { label: "AI Router", currency: "USD", symbol: "$", placeholder: "10.00", step: "1" },
+  sms: { label: "SMS OTP", currency: "IDR", symbol: "Rp", placeholder: "50000", step: "1000" },
+};
 
 const SORT_OPTIONS = [
   { value: "newest", label: "Newest first" },
@@ -42,6 +74,7 @@ export default function VoucherPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [kind, setKind] = useState("ai");
   const [amount, setAmount] = useState("");
   const [quantity, setQuantity] = useState("1");
   const [note, setNote] = useState("");
@@ -49,6 +82,7 @@ export default function VoucherPage() {
   const [confirmState, setConfirmState] = useState(null);
   const [confirmLoading, setConfirmLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState("all");
+  const [kindFilter, setKindFilter] = useState("all");
   const [sortBy, setSortBy] = useState("newest");
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [page, setPage] = useState(1);
@@ -98,22 +132,31 @@ export default function VoucherPage() {
     } else if (statusFilter === "redeemed") {
       list = list.filter((v) => v.status === "redeemed");
     }
+    if (kindFilter !== "all") {
+      list = list.filter((v) => voucherKind(v) === kindFilter);
+    }
     const sorted = [...list];
     sorted.sort((a, b) => {
       switch (sortBy) {
         case "oldest":
           return new Date(a.createdAt) - new Date(b.createdAt);
+        // Amounts are compared within a currency, so AI and SMS vouchers group
+        // together rather than interleaving on raw numbers.
         case "amountHigh":
-          return Number(b.amountUsd) - Number(a.amountUsd);
+          return voucherKind(a) === voucherKind(b)
+            ? voucherAmount(b) - voucherAmount(a)
+            : voucherKind(a).localeCompare(voucherKind(b));
         case "amountLow":
-          return Number(a.amountUsd) - Number(b.amountUsd);
+          return voucherKind(a) === voucherKind(b)
+            ? voucherAmount(a) - voucherAmount(b)
+            : voucherKind(a).localeCompare(voucherKind(b));
         case "newest":
         default:
           return new Date(b.createdAt) - new Date(a.createdAt);
       }
     });
     return sorted;
-  }, [vouchers, searchQuery, statusFilter, sortBy]);
+  }, [vouchers, searchQuery, statusFilter, kindFilter, sortBy]);
 
   const totalPages = Math.max(1, Math.ceil(filteredVouchers.length / VOUCHERS_PER_PAGE));
   const safePage = Math.min(page, totalPages);
@@ -122,7 +165,7 @@ export default function VoucherPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [searchQuery, statusFilter, sortBy]);
+  }, [searchQuery, statusFilter, kindFilter, sortBy]);
 
   const summary = useMemo(() => {
     return vouchers.reduce((acc, v) => {
@@ -130,10 +173,11 @@ export default function VoucherPage() {
       if (v.status === "redeemed") acc.redeemed += 1;
       else {
         acc.active += 1;
-        acc.activeValue += Number(v.amountUsd || 0);
+        if (voucherKind(v) === "sms") acc.activeValueIdr += voucherAmount(v);
+        else acc.activeValueUsd += voucherAmount(v);
       }
       return acc;
-    }, { total: 0, active: 0, redeemed: 0, activeValue: 0 });
+    }, { total: 0, active: 0, redeemed: 0, activeValueUsd: 0, activeValueIdr: 0 });
   }, [vouchers]);
 
   const amountValue = Number(amount);
@@ -149,6 +193,7 @@ export default function VoucherPage() {
     quantity !== "" && Number.isFinite(quantityValue) && quantityValue >= 1 && quantityValue <= 100;
 
   const openCreate = () => {
+    setKind("ai");
     setAmount("");
     setQuantity("1");
     setNote("");
@@ -164,7 +209,8 @@ export default function VoucherPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          amountUsd: amountValue,
+          kind,
+          ...(kind === "sms" ? { amountIdr: amountValue } : { amountUsd: amountValue }),
           count: quantityValue,
           note: note.trim() || undefined,
         }),
@@ -278,14 +324,20 @@ export default function VoucherPage() {
         <SummaryCard icon="confirmation_number" label="Vouchers" value={summary.total} />
         <SummaryCard icon="check_circle" label="Active" value={summary.active} />
         <SummaryCard icon="redeem" label="Redeemed" value={summary.redeemed} />
-        <SummaryCard icon="account_balance_wallet" label="Active Value" value={formatUsd(summary.activeValue)} />
+        <SummaryCard
+          icon="account_balance_wallet"
+          label="Active Value"
+          value={formatUsd(summary.activeValueUsd)}
+          sub={summary.activeValueIdr > 0 ? `+ ${formatIdr(summary.activeValueIdr)} SMS` : null}
+        />
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2 rounded-[10px] border border-border-subtle bg-surface px-3 py-2.5">
           <span className="material-symbols-outlined shrink-0 text-[16px] text-primary">info</span>
           <p className="text-xs text-text-muted">
-            Redeem a voucher from the Users page to add its value to a user&apos;s budget.
+            AI Router vouchers are redeemed from the Users page. SMS OTP vouchers are
+            redeemed by the buyer on the portfolio dashboard.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -299,18 +351,27 @@ export default function VoucherPage() {
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <SegmentedControl
-          options={STATUS_OPTIONS}
-          value={statusFilter}
-          onChange={setStatusFilter}
-          size="sm"
-          className="w-full sm:w-auto"
-        />
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <SegmentedControl
+            options={STATUS_OPTIONS}
+            value={statusFilter}
+            onChange={setStatusFilter}
+            size="sm"
+            className="w-full sm:w-auto"
+          />
+          <SegmentedControl
+            options={KIND_OPTIONS}
+            value={kindFilter}
+            onChange={setKindFilter}
+            size="sm"
+            className="w-full sm:w-auto"
+          />
+        </div>
         <Select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value)}
           options={SORT_OPTIONS}
-          className="w-full sm:w-auto sm:min-w-[200px]"
+          className="w-full shrink-0 sm:w-auto sm:min-w-[200px]"
         />
       </div>
 
@@ -394,19 +455,42 @@ export default function VoucherPage() {
           <div className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
               <label className="text-sm font-medium text-text-main">
-                Amount <span className="ml-1 text-red-500">*</span>
+                Product <span className="ml-1 text-red-500">*</span>
+              </label>
+              <SegmentedControl
+                options={KIND_OPTIONS.filter((o) => o.value !== "all")}
+                value={kind}
+                onChange={(next) => {
+                  setKind(next);
+                  // The two products use different currencies and magnitudes, so
+                  // a leftover "10" would silently mean Rp10 after switching.
+                  setAmount("");
+                }}
+                size="sm"
+              />
+              <p className="text-xs text-text-muted">
+                {kind === "sms"
+                  ? "Tops up the SMS OTP wallet (rupiah) on the portfolio dashboard."
+                  : "Adds USD budget to the holder's AI Router account."}
+              </p>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-text-main">
+                Amount ({KIND_META[kind].currency}) <span className="ml-1 text-red-500">*</span>
               </label>
               <div className="relative">
-                <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-sm text-text-muted">$</span>
+                <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-sm text-text-muted">
+                  {KIND_META[kind].symbol}
+                </span>
                 <input
                   type="number"
                   min="0"
-                  step="1"
+                  step={KIND_META[kind].step}
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
-                  placeholder="10.00"
+                  placeholder={KIND_META[kind].placeholder}
                   className={cn(
-                    "w-full rounded-[10px] border border-transparent bg-surface-2 py-2.5 pl-7 pr-3 text-[16px] text-text-main transition-all placeholder-text-muted/70 focus:border-brand-500/40 focus:outline-none focus:ring-2 focus:ring-brand-500/30 sm:text-sm",
+                    "w-full rounded-[10px] border border-transparent bg-surface-2 py-2.5 pl-9 pr-3 text-[16px] text-text-main transition-all placeholder-text-muted/70 focus:border-brand-500/40 focus:outline-none focus:ring-2 focus:ring-brand-500/30 sm:text-sm",
                     amountError && "border-red-500/40 ring-1 ring-red-500 focus:ring-red-500/40"
                   )}
                 />
@@ -476,7 +560,7 @@ export default function VoucherPage() {
   );
 }
 
-function SummaryCard({ icon, label, value }) {
+function SummaryCard({ icon, label, value, sub }) {
   return (
     <Card padding="sm">
       <div className="flex items-center gap-3">
@@ -485,7 +569,10 @@ function SummaryCard({ icon, label, value }) {
         </div>
         <div className="min-w-0">
           <div className="truncate text-2xl font-bold leading-none text-text-main tabular-nums">{value}</div>
-          <div className="mt-0.5 truncate text-xs text-text-muted">{label}</div>
+          <div className="mt-0.5 truncate text-xs text-text-muted">
+            {label}
+            {sub ? <span className="ml-1 tabular-nums">· {sub}</span> : null}
+          </div>
         </div>
       </div>
     </Card>
@@ -518,13 +605,23 @@ function VoucherRow({ voucher, onDelete, selected, onToggleSelect }) {
               {copied ? "check" : "content_copy"}
             </span>
           </button>
+          <span
+            className={cn(
+              "shrink-0 rounded-full px-2 py-1 text-[11px] font-semibold",
+              voucherKind(voucher) === "sms"
+                ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                : "bg-surface-2 text-text-muted"
+            )}
+          >
+            {KIND_META[voucherKind(voucher)].label}
+          </span>
           {voucher.note && (
             <span className="truncate text-xs text-text-muted">{voucher.note}</span>
           )}
         </div>
 
         <div className="flex items-center justify-between gap-4 sm:justify-end">
-          <span className="text-sm font-semibold text-text-main tabular-nums">{formatUsd(voucher.amountUsd)}</span>
+          <span className="text-sm font-semibold text-text-main tabular-nums">{formatVoucherAmount(voucher)}</span>
           <span
             className={cn(
               "rounded-full px-2 py-1 text-[11px] font-semibold",

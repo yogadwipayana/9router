@@ -47,6 +47,7 @@ export {
 // Vouchers
 export {
   getVouchers, getVoucherByCode, createVoucher, deleteVoucher, deleteVouchers, redeemVoucher,
+  claimVoucher, releaseVoucher, VOUCHER_KINDS,
 } from "./repos/vouchersRepo.js";
 
 // Temp API keys (time + cost limited, Postgres-only)

@@ -32,12 +32,22 @@ function generateCode() {
   return `V-${groups.join("-")}`;
 }
 
+/** Products a voucher can top up. See the `kind` note on the Prisma model. */
+export const VOUCHER_KINDS = ["ai", "sms"];
+
+function normalizeKind(kind) {
+  const value = typeof kind === "string" ? kind.trim().toLowerCase() : "";
+  return VOUCHER_KINDS.includes(value) ? value : "ai";
+}
+
 function toVoucher(row) {
   if (!row) return null;
   return {
     id: row.id,
     code: row.code,
+    kind: row.kind || "ai",
     amountUsd: Number(row.amountUsd || 0),
+    amountIdr: Number(row.amountIdr || 0),
     status: row.status,
     redeemedBy: row.redeemedBy || null,
     redeemedAt: row.redeemedAt || null,
@@ -61,9 +71,15 @@ export async function getVoucherByCode(code) {
   return toVoucher(row);
 }
 
-export async function createVoucher({ amountUsd, note } = {}) {
+/**
+ * Create one voucher. `kind` decides which amount matters: "ai" reads
+ * `amountUsd`, "sms" reads `amountIdr`. The other column stays 0 so a voucher
+ * can never be spent against the wrong product.
+ */
+export async function createVoucher({ kind, amountUsd, amountIdr, note } = {}) {
   assertPostgres();
-  const amount = Number(amountUsd);
+  const voucherKind = normalizeKind(kind);
+  const amount = Number(voucherKind === "sms" ? amountIdr : amountUsd);
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error("Amount must be greater than zero");
   }
@@ -77,7 +93,9 @@ export async function createVoucher({ amountUsd, note } = {}) {
         data: {
           id: uuidv4(),
           code: generateCode(),
-          amountUsd: amount,
+          kind: voucherKind,
+          amountUsd: voucherKind === "ai" ? amount : 0,
+          amountIdr: voucherKind === "sms" ? amount : 0,
           status: "active",
           redeemedBy: null,
           redeemedAt: null,
@@ -125,6 +143,9 @@ export async function redeemVoucher(code, email) {
 
     const row = await tx.voucher.findUnique({ where: { code: normalizedCode } });
     if (!row) throw new Error("Voucher not found");
+    // An SMS voucher carries no USD value — redeeming it here would credit $0
+    // and burn the code. Reject it so the holder can claim it where it counts.
+    if ((row.kind || "ai") !== "ai") throw new Error("Voucher is not an AI Router voucher");
     if (row.status !== "active") throw new Error("Voucher already redeemed");
 
     // Atomic claim: only flips if still active, guarding against double-redeem.
@@ -147,4 +168,68 @@ export async function redeemVoucher(code, email) {
   const { getOwnerBudgetState } = await import("./ownerUsersRepo.js");
   const state = await getOwnerBudgetState(normalizedEmail);
   return { voucher, user: state || user };
+}
+
+/**
+ * Claim an SMS voucher for `email` and hand back its rupiah value.
+ *
+ * Unlike `redeemVoucher`, nothing here touches a budget: the balance lives in
+ * the caller's own database. This only flips the code to "redeemed" so it can
+ * never be claimed twice, and the caller credits its wallet afterwards. If that
+ * credit fails, the caller must call `releaseVoucher` to hand the code back.
+ *
+ * No ownerUser row is required — an SMS buyer may never have used the router.
+ */
+export async function claimVoucher(code, email) {
+  assertPostgres();
+  const normalizedCode = normalizeCode(code);
+  if (!normalizedCode) throw new Error("Voucher not found");
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) throw new Error("Email is required");
+
+  const prisma = getPrisma();
+  const now = new Date().toISOString();
+
+  return prisma.$transaction(async (tx) => {
+    const row = await tx.voucher.findUnique({ where: { code: normalizedCode } });
+    if (!row) throw new Error("Voucher not found");
+    if ((row.kind || "ai") !== "sms") throw new Error("Voucher is not an SMS voucher");
+    if (row.status !== "active") throw new Error("Voucher already redeemed");
+
+    // Atomic claim: only flips if still active, guarding against double-claim.
+    const claim = await tx.voucher.updateMany({
+      where: { code: normalizedCode, kind: "sms", status: "active" },
+      data: { status: "redeemed", redeemedBy: normalizedEmail, redeemedAt: now, updatedAt: now },
+    });
+    if (claim.count !== 1) throw new Error("Voucher already redeemed");
+
+    const claimed = await tx.voucher.findUnique({ where: { code: normalizedCode } });
+    return toVoucher(claimed);
+  });
+}
+
+/**
+ * Undo a claim so the code can be used again.
+ *
+ * Scoped to the claiming email so one buyer's failed top-up can never free
+ * another's voucher. Returns false when there was nothing to release, which the
+ * caller should treat as "already settled" rather than an error.
+ */
+export async function releaseVoucher(code, email) {
+  assertPostgres();
+  const normalizedCode = normalizeCode(code);
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedCode || !normalizedEmail) return false;
+
+  const now = new Date().toISOString();
+  const res = await getPrisma().voucher.updateMany({
+    where: {
+      code: normalizedCode,
+      kind: "sms",
+      status: "redeemed",
+      redeemedBy: normalizedEmail,
+    },
+    data: { status: "active", redeemedBy: null, redeemedAt: null, updatedAt: now },
+  });
+  return res.count > 0;
 }

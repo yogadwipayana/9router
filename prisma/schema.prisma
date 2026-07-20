@@ -109,10 +109,17 @@ model Pricing {
   @@map("pricing")
 }
 
+// `kind` picks which product the voucher tops up: "ai" adds amountUsd to the
+// owner's router budget, "sms" adds amountIdr to the SMS wallet held by the
+// portfolio app (claimed over /v1/admin/voucher/claim, never touching budgetUsd).
+// Added MANUALLY (migrate history is broken): apply
+// prisma/manual/add-voucher-kind.sql via `prisma db execute`, then `prisma generate`.
 model Voucher {
   id         String  @id
   code       String  @unique
+  kind       String  @default("ai")
   amountUsd  Float
+  amountIdr  Float   @default(0)
   status     String  @default("active")
   redeemedBy String?
   redeemedAt String?
@@ -121,6 +128,7 @@ model Voucher {
   updatedAt  String
 
   @@index([status], map: "idx_voucher_status")
+  @@index([kind], map: "idx_voucher_kind")
   @@map("vouchers")
 }
 

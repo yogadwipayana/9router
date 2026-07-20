@@ -16,6 +16,7 @@ export {
   getCombos, getComboById, getComboByName,
   createCombo, updateCombo, deleteCombo,
   getVouchers, getVoucherByCode, createVoucher, deleteVoucher, deleteVouchers, redeemVoucher,
+  claimVoucher, releaseVoucher, VOUCHER_KINDS,
   getTempApiKeys, createTempApiKey, deleteTempApiKey, deleteTempApiKeys,
   getModelAliases, setModelAlias, deleteModelAlias,
   getCustomModels, addCustomModel, deleteCustomModel,

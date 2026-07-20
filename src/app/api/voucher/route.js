@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getVouchers, createVoucher, deleteVouchers } from "@/lib/localDb";
+import { getVouchers, createVoucher, deleteVouchers, VOUCHER_KINDS } from "@/lib/localDb";
 
 export const dynamic = "force-dynamic";
 
@@ -16,8 +16,14 @@ export async function GET() {
 export async function POST(request) {
   try {
     const body = await request.json();
-    const amountUsd = Number(body.amountUsd);
-    if (!Number.isFinite(amountUsd) || amountUsd <= 0) {
+    const kind = body.kind === undefined ? "ai" : String(body.kind);
+    if (!VOUCHER_KINDS.includes(kind)) {
+      return NextResponse.json({ error: `Kind must be one of: ${VOUCHER_KINDS.join(", ")}` }, { status: 400 });
+    }
+
+    // Each kind carries its own currency; only the matching field is read.
+    const amount = Number(kind === "sms" ? body.amountIdr : body.amountUsd);
+    if (!Number.isFinite(amount) || amount <= 0) {
       return NextResponse.json({ error: "Amount must be greater than zero" }, { status: 400 });
     }
 
@@ -28,7 +34,12 @@ export async function POST(request) {
 
     const vouchers = [];
     for (let i = 0; i < count; i += 1) {
-      vouchers.push(await createVoucher({ amountUsd, note: body.note }));
+      vouchers.push(await createVoucher({
+        kind,
+        amountUsd: kind === "ai" ? amount : 0,
+        amountIdr: kind === "sms" ? amount : 0,
+        note: body.note,
+      }));
     }
     return NextResponse.json({ vouchers }, { status: 201 });
   } catch (error) {
