@@ -4,7 +4,8 @@ import "./registerAll.js";
 import { translateRequest } from "../../open-sse/translator/index.js";
 import { FORMATS } from "../../open-sse/translator/formats.js";
 
-const O2K = (body) => translateRequest(FORMATS.OPENAI, FORMATS.KIRO, "m", body, true, null, "kiro");
+const O2K = (body, credentials = null) =>
+  translateRequest(FORMATS.OPENAI, FORMATS.KIRO, "m", body, true, credentials, "kiro");
 const R2K = (model, body) => translateRequest(
   FORMATS.OPENAI_RESPONSES,
   FORMATS.KIRO,
@@ -46,6 +47,26 @@ describe("OpenAI → Kiro", () => {
         ],
       })
     ).not.toThrow();
+  });
+
+  it("does not replay tool declarations inside history", () => {
+    const credentials = {
+      rawHeaders: { "x-session-id": "openai-replay-tools" },
+      connectionId: "kiro-openai-tools",
+    };
+    const body = {
+      tools: [{
+        type: "function",
+        function: { name: "read", parameters: { type: "object", properties: {} } },
+      }],
+      messages: [{ role: "user", content: "read a file" }],
+    };
+
+    O2K(body, credentials);
+    const second = O2K(body, credentials);
+
+    expect(second.conversationState.history[0].userInputMessage.userInputMessageContext?.tools).toBeUndefined();
+    expect(second.conversationState.currentMessage.userInputMessage.userInputMessageContext?.tools).toHaveLength(1);
   });
 
   // openai-to-kiro.js:309 — maxTokens hardcoded to 32000, ignores body.max_tokens

@@ -880,5 +880,11 @@
       "preserveCacheControl": true
     },
     "format": "openai"
+  },
+  "9router": {
+    "baseUrl": "https://9router.yogathedev.com/v1/chat/completions",
+    "validateUrl": "https://9router.yogathedev.com/v1/models",
+    "thinkingFormat": "openai",
+    "format": "openai"
   }
 }

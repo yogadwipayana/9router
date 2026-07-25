@@ -18,6 +18,8 @@ import { resolveCopilotModels } from "open-sse/services/copilotModels.js";
 import { resolveClinepassModels } from "open-sse/services/clinepassModels.js";
 import { resolveGrokCliModels } from "open-sse/services/grokCliModels.js";
 import { resolveCursorModels } from "open-sse/services/cursorModels.js";
+import { PROVIDERS } from "open-sse/config/providers.js";
+import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
 import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { capabilitiesFromServiceKind, getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
@@ -26,6 +28,24 @@ import { capabilitiesFromServiceKind, getCapabilitiesForModel } from "open-sse/p
 // returns { models: [{ id, name? }, ...] } | null on failure.
 // Adding a provider here makes /v1/models prefer the live catalog for it.
 const LIVE_MODEL_RESOLVERS = {
+  "9router": async (conn) => {
+    if (!conn.apiKey) return null;
+    const proxy = await resolveConnectionProxyConfig(conn.providerSpecificData || {});
+    const response = await proxyAwareFetch(PROVIDERS["9router"].validateUrl, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${conn.apiKey}`,
+        [INTERNAL_MODELS_FETCH_HEADER]: "1",
+      },
+      cache: "no-store",
+      signal: AbortSignal.timeout(8000),
+    }, proxy);
+    if (!response.ok) return null;
+    const data = await response.json();
+    const models = parseOpenAIStyleModels(data);
+    return models.length ? { models } : null;
+  },
   kiro: async (conn) => {
     const result = await resolveKiroModels({
       accessToken: conn.accessToken,
@@ -482,7 +502,7 @@ export async function buildModelsList(kindFilter, options = {}) {
       // -thinking/-agentic variants per account). On failure, fall back to
       // whatever rawModelIds already holds.
       const liveResolver = LIVE_MODEL_RESOLVERS[providerId];
-      if (liveResolver && !hasExplicitEnabledModels) {
+      if (liveResolver && !hasExplicitEnabledModels && !skipDynamicFetch) {
         try {
           const live = await liveResolver(conn);
           if (live?.models?.length) {
@@ -569,7 +589,7 @@ export async function buildModelsList(kindFilter, options = {}) {
         // imageToText custom models stay in the LLM list (vision-capable chat models)
         const allowAsLlm = kind === "imageToText" && kindFilter.includes(LLM_KIND);
         if (!kindFilter.includes(kind) && !allowAsLlm) continue;
-        if (isDisabled(outputAlias, modelId) || isDisabled(staticAlias, modelId)) continue;
+        if (!isEnabled(outputAlias, modelId) && !isEnabled(staticAlias, modelId) && !isEnabled(providerId, modelId)) continue;
 
         const model = {
           id: `${outputAlias}/${modelId}`,
@@ -600,7 +620,7 @@ export async function buildModelsList(kindFilter, options = {}) {
         }
       }
       for (const subId of subConfigModels) {
-        if (isDisabled(outputAlias, subId) || isDisabled(staticAlias, subId)) continue;
+        if (!isEnabled(outputAlias, subId) && !isEnabled(staticAlias, subId) && !isEnabled(providerId, subId)) continue;
         models.push({
           id: `${outputAlias}/${subId}`,
           object: "model",
@@ -610,7 +630,7 @@ export async function buildModelsList(kindFilter, options = {}) {
 
       // Web search/fetch — provider IS the model, expose as {alias}/search and/or {alias}/fetch with explicit kind
       if (kindFilter.includes("webSearch") && providerInfo?.searchConfig) {
-        if (!isDisabled(outputAlias, "search") && !isDisabled(staticAlias, "search")) {
+        if (isEnabled(outputAlias, "search") || isEnabled(staticAlias, "search") || isEnabled(providerId, "search")) {
           models.push({
             id: `${outputAlias}/search`,
             object: "model",
@@ -620,7 +640,7 @@ export async function buildModelsList(kindFilter, options = {}) {
         }
       }
       if (kindFilter.includes("webFetch") && providerInfo?.fetchConfig) {
-        if (!isDisabled(outputAlias, "fetch") && !isDisabled(staticAlias, "fetch")) {
+        if (isEnabled(outputAlias, "fetch") || isEnabled(staticAlias, "fetch") || isEnabled(providerId, "fetch")) {
           models.push({
             id: `${outputAlias}/fetch`,
             object: "model",

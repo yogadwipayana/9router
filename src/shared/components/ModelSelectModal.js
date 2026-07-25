@@ -49,6 +49,7 @@ export default function ModelSelectModal({
   const [customModels, setCustomModels] = useState([]);
   const [enabledModels, setEnabledModels] = useState({});
   const [cursorModels, setCursorModels] = useState([]);
+  const [nineRouterModels, setNineRouterModels] = useState([]);
 
   // Cursor exposes the usable catalog per account. Keep the static catalog only
   // as a fallback, since it quickly becomes stale and different accounts can
@@ -90,6 +91,44 @@ export default function ModelSelectModal({
 
     return () => { cancelled = true; };
   }, [isOpen, cursorConnectionIds]);
+
+  const nineRouterConnectionIds = useMemo(
+    () => activeProviders
+      .filter((provider) => provider.provider === "9router" && provider.id)
+      .map((provider) => provider.id),
+    [activeProviders],
+  );
+
+  useEffect(() => {
+    if (!isOpen || nineRouterConnectionIds.length === 0) {
+      setNineRouterModels([]);
+      return undefined;
+    }
+
+    let cancelled = false;
+    Promise.all(nineRouterConnectionIds.map(async (connectionId) => {
+      const response = await fetch(`/api/providers/${connectionId}/models`, { cache: "no-store" });
+      if (!response.ok) return [];
+      const data = await response.json();
+      return Array.isArray(data.models) ? data.models : [];
+    }))
+      .then((modelLists) => {
+        if (cancelled) return;
+        const seen = new Set();
+        setNineRouterModels(modelLists.flat().filter((model) => {
+          const id = model?.id || model?.model || model?.name;
+          if (!id || seen.has(id)) return false;
+          seen.add(id);
+          return true;
+        }));
+      })
+      .catch((error) => {
+        console.warn("Unable to load 9Router models for selector:", error);
+        if (!cancelled) setNineRouterModels([]);
+      });
+
+    return () => { cancelled = true; };
+  }, [isOpen, nineRouterConnectionIds]);
 
   const fetchCombos = async () => {
     try {
@@ -234,7 +273,43 @@ export default function ModelSelectModal({
           }));
 
         // For typed kinds, only include hardcoded typed models (aliases are typically LLM-only and lack type info)
-        let combined = aliasModels;
+        const liveModels = providerId === "9router"
+          ? nineRouterModels.map((model) => {
+            const id = model.id || model.model || model.name;
+            return {
+              id,
+              name: model.name || model.id || model.model || id,
+              value: `${alias}/${id}`,
+              kind: model.kind || model.type,
+            };
+          })
+          : [];
+        const liveIds = new Set(liveModels.map((model) => model.id));
+        let combined = [
+          ...liveModels,
+          ...aliasModels.filter((model) => !liveIds.has(model.id)),
+        ];
+        if (providerId === "9router") {
+          const configuredIds = [
+            ...(enabledModels[alias] || []),
+            ...(enabledModels[providerId] || []),
+          ];
+          const knownIds = new Set(combined.map((model) => model.id));
+          const normalizedConfiguredIds = Array.from(new Set(
+            configuredIds
+              .map((configuredId) => String(configuredId).trim())
+              .map((configuredId) => configuredId.startsWith(`${alias}/`)
+                ? configuredId.slice(alias.length + 1)
+                : configuredId)
+              .filter(Boolean),
+          ));
+          combined = [
+            ...combined,
+            ...normalizedConfiguredIds
+              .filter((id) => !knownIds.has(id))
+              .map((id) => ({ id, name: id, value: `${alias}/${id}`, isCustom: true })),
+          ];
+        }
         if (kindFilter && TYPED_KINDS.has(kindFilter)) {
           const registeredTyped = customRegisteredModels.filter((m) => getModelKind(m) === kindFilter);
           combined = [
@@ -258,6 +333,18 @@ export default function ModelSelectModal({
             .map((m) => ({ id: m.id, name: m.name, value: `${alias}/${m.id}`, kind: getModelKind(m) }))
             .filter((m) => !seen.has(m.value));
           combined = [...registeredLlms, ...aliasModels.filter((m) => !registeredLlms.some((registered) => registered.value === m.value)), ...hardcoded];
+        }
+
+        // 9Router is a passthrough gateway and may be temporarily unable to
+        // expose its upstream catalog. Keep it selectable so users can enter
+        // a routed model ID manually instead of losing the provider group.
+        if (combined.length === 0 && providerId === "9router" && !kindFilter) {
+          combined = [{
+            id: "model-id",
+            name: `${alias}/model-id`,
+            value: `${alias}/model-id`,
+            isPlaceholder: true,
+          }];
         }
 
         if (combined.length > 0) {
@@ -383,16 +470,24 @@ export default function ModelSelectModal({
     // Keep only enabled models per provider (enabled set keyed by storage alias OR providerId)
     Object.entries(groups).forEach(([providerId, group]) => {
       const aliasKey = getProviderAlias(providerId);
-      const enabledIds = new Set([
+      const configuredEnabledIds = [
         ...(enabledModels[aliasKey] || []),
         ...(enabledModels[providerId] || []),
-      ]);
-      group.models = group.models.filter((m) => enabledIds.has(m.id));
+      ];
+      // Dynamic passthrough providers have no static model list to seed the
+      // enabled-model store. Keep their live catalog selectable until the user
+      // explicitly creates an allowlist from the provider page.
+      const hasDynamicCatalog = providerId === "9router" && nineRouterModels.length > 0;
+      const hasPassthroughPlaceholder = group.models.some((model) => model.isPlaceholder);
+      if (configuredEnabledIds.length > 0 || (!hasDynamicCatalog && !hasPassthroughPlaceholder)) {
+        const enabledIds = new Set(configuredEnabledIds);
+        group.models = group.models.filter((m) => m.isPlaceholder || enabledIds.has(m.id));
+      }
       if (group.models.length === 0) delete groups[providerId];
     });
 
     return groups;
-  }, [filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, enabledModels, kindFilter, activeProviders, cursorModels]);
+  }, [filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, enabledModels, kindFilter, activeProviders, cursorModels, nineRouterModels]);
 
   // Filter combos by search query (and hide combos when kindFilter is set — combos are LLM-only by design)
   const filteredCombos = useMemo(() => {

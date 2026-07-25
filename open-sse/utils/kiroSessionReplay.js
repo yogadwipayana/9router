@@ -25,6 +25,19 @@ function ensureHistoryModelIds(history, modelId) {
   return history;
 }
 
+function sanitizeHistoryUserMessage(message) {
+  const out = clone(message);
+  const userInput = out?.userInputMessage;
+  const context = userInput?.userInputMessageContext;
+  if (!context?.tools) return out;
+
+  delete context.tools;
+  if (Object.keys(context).length === 0) {
+    delete userInput.userInputMessageContext;
+  }
+  return out;
+}
+
 function prefixUserMessage(message, contentPrefix, modelId) {
   const out = clone(message) || { userInputMessage: { content: "" } };
   if (!out.userInputMessage) out.userInputMessage = { content: "" };
@@ -72,7 +85,10 @@ export function applyKiroSessionReplay({
   if (existing && existing.modelId === modelId && existing.systemPrompt === systemPrompt) {
     existing.lastUsed = Date.now();
     const firstUserIndex = findFirstUserIndex(baseHistory);
-    const sessionStart = ensureUserMessageModelId(clone(existing.sessionStart), modelId);
+    const sessionStart = ensureUserMessageModelId(
+      sanitizeHistoryUserMessage(existing.sessionStart),
+      modelId
+    );
     if (firstUserIndex >= 0) {
       baseHistory[firstUserIndex] = sessionStart;
     } else {
@@ -90,11 +106,12 @@ export function applyKiroSessionReplay({
   let nextCurrent = ensureUserMessageModelId(baseCurrent, modelId);
   if (firstUserIndex >= 0) {
     sessionStart = prefixUserMessage(baseHistory[firstUserIndex], contentPrefix, modelId);
+    sessionStart = sanitizeHistoryUserMessage(sessionStart);
     baseHistory[firstUserIndex] = clone(sessionStart);
     nextCurrent = prefixUserMessage(baseCurrent, currentContentPrefix, modelId);
   } else {
-    sessionStart = prefixUserMessage(baseCurrent, contentPrefix, modelId);
-    nextCurrent = clone(sessionStart);
+    nextCurrent = prefixUserMessage(baseCurrent, contentPrefix, modelId);
+    sessionStart = sanitizeHistoryUserMessage(nextCurrent);
   }
 
   if (conversationId) {

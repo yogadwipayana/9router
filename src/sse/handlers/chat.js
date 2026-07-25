@@ -23,6 +23,7 @@ import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
+import { getConsistentMachineId } from "@/shared/utils/machineId";
 
 // Client-facing error for models not on the published list. Also used for
 // combo-expansion steps that fail the enabled allowlist, so internal
@@ -137,6 +138,8 @@ export async function handleChat(request, clientRawRequest = null) {
  */
 async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, fromCombo = false) {
   const modelInfo = await getModelInfo(modelStr);
+  const isInternalModelTest = request?.headers?.get("x-9r-model-test") === "1"
+    && request?.headers?.get("x-9r-cli-token") === await getConsistentMachineId("9r-cli-auth");
 
   // Enforce per-provider enabled allowlist set via the dashboard
   const parsed = parseModel(modelStr);
@@ -148,7 +151,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   // inference (e.g. a deleted combo "gpt-x" would otherwise be guessed as
   // provider "openai" and fail with a misleading credentials error).
   // Combo-expansion calls (fromCombo) bypass this so fallback keeps working.
-  if (!fromCombo) {
+  if (!fromCombo && !isInternalModelTest) {
     let combos = [];
     try {
       combos = await getCombos();

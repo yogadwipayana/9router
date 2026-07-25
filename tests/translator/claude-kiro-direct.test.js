@@ -37,6 +37,23 @@ describe("Claude → Kiro (direct route)", () => {
     expect(second.conversationState.currentMessage.userInputMessage.content).toContain("second");
   });
 
+  it("does not replay tool declarations inside history", () => {
+    const credentials = {
+      rawHeaders: { "x-session-id": "claude-replay-tools" },
+      connectionId: "kiro-account-tools",
+    };
+    const body = {
+      tools: [{ name: "read", input_schema: { type: "object", properties: {} } }],
+      messages: [{ role: "user", content: "read a file" }],
+    };
+
+    C2K(body, credentials);
+    const second = C2K(body, credentials);
+
+    expect(second.conversationState.history[0].userInputMessage.userInputMessageContext?.tools).toBeUndefined();
+    expect(second.conversationState.currentMessage.userInputMessage.userInputMessageContext?.tools).toHaveLength(1);
+  });
+
   it("guard 1: with no tools, a dangling tool_result is flattened to text (no structured ref)", () => {
     // Client omitted `tools` but kept a tool_result after compaction.
     const out = C2K({

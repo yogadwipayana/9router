@@ -1,5 +1,6 @@
 {
   "aliasToId": {
+    "9router": "9router",
     "cc": "claude",
     "cx": "codex",
     "gc": "gemini-cli",
@@ -96,6 +97,7 @@
     "blackbox": "blackbox"
   },
   "idToAlias": {
+    "9router": "9router",
     "alicode": "alicode",
     "alicode-intl": "alicode-intl",
     "alims-intl": "alims-intl",
@@ -166,6 +168,7 @@
     "xiaomi-tokenplan": "xiaomi-tokenplan"
   },
   "modelKeys": [
+    "9router",
     "ag",
     "alicode",
     "alicode-intl",
