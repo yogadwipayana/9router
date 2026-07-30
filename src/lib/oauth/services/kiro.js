@@ -260,11 +260,9 @@ export class KiroService {
   }
 
   /**
-   * List available CodeWhisperer profiles for a token (or API key) and return
-   * the best-matching profileArn. AWS SSO OIDC logins return no profileArn, so
-   * it must be fetched separately — the same call works for API-key auth.
-   * Accepts both `arn` and `profileArn` response field names (the API-key
-   * JSON-1.0 surface returns `arn`).
+   * List available CodeWhisperer profiles for OAuth/IDC tokens and return the
+   * best-matching profileArn. API keys use the Amazon Q model catalog instead;
+   * ListAvailableProfiles does not support TokenType=API_KEY.
    */
   async listAvailableProfiles(accessToken, region = "us-east-1") {
     assertValidAwsRegion(region);
@@ -291,6 +289,39 @@ export class KiroService {
     const arnOf = (p) => p?.arn || p?.profileArn || null;
     const match = profiles.find((p) => arnOf(p)?.split(":")[3] === region) || profiles[0];
     return arnOf(match);
+  }
+
+  /**
+   * Validate an API key against the Amazon Q model catalog. A bearer-only call
+   * to ListAvailableProfiles can return HTTP 200 with an empty list for an
+   * arbitrary key, so it is not proof that the key can run inference.
+   */
+  async listAvailableApiKeyModels(apiKey, region = "us-east-1") {
+    assertValidAwsRegion(region);
+    const params = new URLSearchParams({ origin: "AI_EDITOR" });
+    const endpoint = `https://q.${region}.amazonaws.com/ListAvailableModels?${params}`;
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "TokenType": "API_KEY",
+        "Accept": "application/json",
+        "User-Agent": "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0",
+        "X-Amz-User-Agent": "aws-sdk-js/3.0.0 kiro-ide/1.0.0",
+      },
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Failed to list API-key models: ${error}`);
+    }
+
+    const data = await response.json();
+    const models = Array.isArray(data?.models) ? data.models : [];
+    if (models.length === 0) {
+      throw new Error("API key returned no available models");
+    }
+    return models;
   }
 
   /**

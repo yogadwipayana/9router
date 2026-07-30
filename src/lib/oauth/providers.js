@@ -41,6 +41,14 @@ import {
 
 export { extractCodexAccountInfo, fetchKiroProfileArn };
 
+// Providers introduced upstream (v0.5.45) as standalone modules. Folded in
+// additively so the fork's monolithic wiring keeps its custom behavior while
+// still exposing the new providers.
+import codebuddyIntl from "./providers/codebuddy-intl.js";
+import trae from "./providers/trae.js";
+import windsurf from "./providers/windsurf.js";
+import zed from "./providers/zed.js";
+
 // Inlined from services/xai.js to keep web route bundle free of `open` (CLI-only) package
 let cachedXaiDiscovery = null;
 
@@ -1563,6 +1571,12 @@ const PROVIDERS = {
       };
     },
   },
+
+  // Providers added upstream in v0.5.45 (self-contained modules).
+  "codebuddy-intl": codebuddyIntl,
+  trae,
+  windsurf,
+  zed,
 };
 
 /**
@@ -1594,7 +1608,11 @@ export async function generateAuthData(providerName, redirectUri, meta) {
   const config = provider.prepareConfig
     ? await provider.prepareConfig(provider.config, meta || {})
     : provider.config;
-  const { codeVerifier, codeChallenge, state } = generatePKCE(provider.pkceVerifierBytes);
+  const { codeVerifier: pkceVerifier, codeChallenge, state: pkceState } = generatePKCE(provider.pkceVerifierBytes);
+  // Trae uses loginTraceID (set by prepareConfig) as the callback matcher, not PKCE state.
+  const state = config.loginTraceID || pkceState;
+  // Zed: codeVerifier carries the encoded RSA private key (from prepareConfig), not a PKCE verifier.
+  const codeVerifier = config.privateKeyVerifier || pkceVerifier;
 
   let authUrl;
   if (provider.flowType === "device_code") {
