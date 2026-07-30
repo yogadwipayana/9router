@@ -9,6 +9,7 @@ import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { cn } from "@/shared/utils/cn";
 
 const KEYS_PER_PAGE = 10;
+const MAX_QUANTITY = 100;
 
 const DURATION_UNITS = [
   { value: "minutes", label: "Minutes", seconds: 60 },
@@ -80,6 +81,7 @@ export default function TempKeyPage() {
   const [budget, setBudget] = useState("");
   const [durationValue, setDurationValue] = useState("24");
   const [durationUnit, setDurationUnit] = useState("hours");
+  const [quantity, setQuantity] = useState("1");
   const [note, setNote] = useState("");
   const [createdKeys, setCreatedKeys] = useState([]);
   const [confirmState, setConfirmState] = useState(null);
@@ -177,15 +179,22 @@ export default function TempKeyPage() {
   const durationError = durationValue !== "" && (!Number.isFinite(durationNum) || durationNum <= 0)
     ? "Duration must be greater than zero"
     : "";
+  const quantityNum = Math.floor(Number(quantity));
+  const quantityValid = Number.isFinite(quantityNum) && quantityNum >= 1 && quantityNum <= MAX_QUANTITY;
+  const quantityError = quantity !== "" && !quantityValid
+    ? `Quantity must be between 1 and ${MAX_QUANTITY}`
+    : "";
   const canCreate =
     budget !== "" && Number.isFinite(budgetValue) && budgetValue > 0 &&
-    durationValue !== "" && Number.isFinite(durationNum) && durationNum > 0;
+    durationValue !== "" && Number.isFinite(durationNum) && durationNum > 0 &&
+    quantity !== "" && quantityValid;
 
   const openCreate = () => {
     setName("");
     setBudget("");
     setDurationValue("24");
     setDurationUnit("hours");
+    setQuantity("1");
     setNote("");
     setCreatedKeys([]);
     setCreateOpen(true);
@@ -204,6 +213,7 @@ export default function TempKeyPage() {
           name: name.trim() || undefined,
           budgetUsd: budgetValue,
           durationSeconds,
+          count: quantityNum,
           note: note.trim() || undefined,
         }),
       });
@@ -493,6 +503,19 @@ export default function TempKeyPage() {
               )}
             </div>
             <Input
+              label="Quantity"
+              type="number"
+              min="1"
+              max={MAX_QUANTITY}
+              step="1"
+              required
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+              placeholder="1"
+              error={quantityError}
+              hint={`Creates up to ${MAX_QUANTITY} keys at once, each with its own budget and lifetime.`}
+            />
+            <Input
               label="Note (optional)"
               value={note}
               onChange={(e) => setNote(e.target.value)}
@@ -500,7 +523,7 @@ export default function TempKeyPage() {
             />
             <div className="flex gap-2">
               <Button onClick={createKey} fullWidth disabled={!canCreate} loading={saving} icon="add">
-                Create
+                {quantityValid && quantityNum > 1 ? `Create ${quantityNum} keys` : "Create"}
               </Button>
               <Button onClick={() => setCreateOpen(false)} variant="ghost" fullWidth>
                 Cancel
