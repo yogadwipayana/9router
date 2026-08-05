@@ -1,11 +1,13 @@
 {
   "name": "9router-app",
-  "version": "0.5.45",
+  "version": "0.5.50",
   "description": "9Router web dashboard",
   "private": true,
   "scripts": {
     "dev": "next dev --webpack --port 4000",
     "build": "next build --webpack",
+    "postbuild": "node scripts/copy-standalone-assets.mjs",
+    "postbuild:bun": "node scripts/copy-standalone-assets.mjs",
     "start": "next start --port 4000",
     "dev:bun": "bun --bun next dev --webpack --port 4000",
     "build:bun": "bun --bun next build --webpack",
