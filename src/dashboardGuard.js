@@ -35,7 +35,8 @@ const PUBLIC_API_PATHS = [
 ];
 
 // Public top-level prefixes (LLM API endpoints with their own API key auth).
-const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta", "/codex"];
+// Keep root-level rewrites here too: middleware runs before Next.js rewrites.
+const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta", "/codex", "/responses"];
 const PUBLIC_ADMIN_PREFIXES = ["/v1/admin", "/api/v1/admin"];
 const PUBLIC_API_CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
