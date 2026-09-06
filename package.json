@@ -26,6 +26,7 @@
     "@dnd-kit/modifiers": "^9.0.0",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "@genspark/cli": "^1.7.1",
     "@monaco-editor/react": "^4.7.0",
     "@next/third-parties": "^16.2.9",
     "@node-saml/node-saml": "^5.1.0",
