@@ -1,6 +1,7 @@
 pm2 stop 9router
 pm2 delete 9router
 
+git fetch
 git pull
 npm install
 npx prisma generate
