@@ -732,21 +732,21 @@ export async function getUsageHistory(filter = {}) {
 async function loadDaysInRange(adapter, maxDays) {
   if (usePostgresOperationalData()) {
     if (maxDays == null) {
-      return await getPrisma().usageDaily.findMany();
+      return await getPrisma().usageDaily.findMany({ orderBy: { dateKey: "asc" } });
     }
     const today = new Date();
     const cutoff = new Date(today.getFullYear(), today.getMonth(), today.getDate() - maxDays + 1);
     const cutoffKey = `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, "0")}-${String(cutoff.getDate()).padStart(2, "0")}`;
-    return await getPrisma().usageDaily.findMany({ where: { dateKey: { gte: cutoffKey } } });
+    return await getPrisma().usageDaily.findMany({ where: { dateKey: { gte: cutoffKey } }, orderBy: { dateKey: "asc" } });
   }
 
   if (maxDays == null) {
-    return adapter.all(`SELECT dateKey, data FROM usageDaily`);
+    return adapter.all(`SELECT dateKey, data FROM usageDaily ORDER BY dateKey ASC`);
   }
   const today = new Date();
   const cutoff = new Date(today.getFullYear(), today.getMonth(), today.getDate() - maxDays + 1);
   const cutoffKey = `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, "0")}-${String(cutoff.getDate()).padStart(2, "0")}`;
-  return adapter.all(`SELECT dateKey, data FROM usageDaily WHERE dateKey >= ?`, [cutoffKey]);
+  return adapter.all(`SELECT dateKey, data FROM usageDaily WHERE dateKey >= ? ORDER BY dateKey ASC`, [cutoffKey]);
 }
 
 export async function getUsageStats(period = "all") {
@@ -947,7 +947,14 @@ export async function getUsageStats(period = "all") {
     // Overlay precise lastUsed timestamps from history. Aggregated in SQL
     // (MAX per 5-tuple) instead of streaming every row to JS — for period
     // "all" the old cutoff=0 fetch was a full-table materialization.
-    const overlayCutoff = maxDays ? Date.now() - maxDays * 86400000 : 0;
+    // The scan is additionally bounded to a recent window: entries older than
+    // that keep day-level lastUsed from usageDaily. Upgrade to a materialized
+    // per-key MAX(timestamp) table if exact old timestamps ever matter.
+    const OVERLAY_WINDOW_MS = 2 * 86400000;
+    const overlayCutoff = Math.max(
+      maxDays ? Date.now() - maxDays * 86400000 : 0,
+      Date.now() - OVERLAY_WINDOW_MS
+    );
     const overlayIso = new Date(overlayCutoff).toISOString();
     const histRows = usingPostgres
       ? (await prisma.usageHistory.groupBy({
@@ -1148,7 +1155,7 @@ export async function getChartData(period = "7d") {
     const startTime = startOfDay.getTime();
     const endTime = startTime + bucketCount * bucketMs;
     const labelFn = (ts) => new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
-    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0 }));
+    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0, requests: 0 }));
 
     const rows = usingPostgres
       ? await prisma.usageHistory.findMany({
@@ -1166,6 +1173,7 @@ export async function getChartData(period = "7d") {
       if (idx >= 0 && idx < bucketCount) {
         buckets[idx].tokens += (r.promptTokens || 0) + (r.completionTokens || 0);
         buckets[idx].cost += r.cost || 0;
+        buckets[idx].requests += 1;
       }
     }
     return buckets;
@@ -1176,7 +1184,7 @@ export async function getChartData(period = "7d") {
     const bucketMs = 3600000;
     const labelFn = (ts) => new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
     const startTime = now - bucketCount * bucketMs;
-    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0 }));
+    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0, requests: 0 }));
 
     const rows = usingPostgres
       ? await prisma.usageHistory.findMany({
@@ -1193,6 +1201,7 @@ export async function getChartData(period = "7d") {
       const idx = Math.min(Math.floor((t - startTime) / bucketMs), bucketCount - 1);
       buckets[idx].tokens += (r.promptTokens || 0) + (r.completionTokens || 0);
       buckets[idx].cost += r.cost || 0;
+      buckets[idx].requests += 1;
     }
     return buckets;
   }
@@ -1229,6 +1238,7 @@ export async function getChartData(period = "7d") {
       label: labelFn(d),
       tokens: dayData ? (dayData.promptTokens || 0) + (dayData.completionTokens || 0) : 0,
       cost: dayData ? (dayData.cost || 0) : 0,
+      requests: dayData ? (dayData.requests || 0) : 0,
     };
   });
 }
