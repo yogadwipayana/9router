@@ -17,6 +17,7 @@ import {
   PONYTAIL_LEVELS,
 } from "./endpointConstants";
 import { clientPingUrl, clientPingAny } from "./endpointPing";
+import useSettingsStore from "@/store/settingsStore";
 import EndpointRow from "./components/EndpointRow";
 import StatusAlert from "./components/StatusAlert";
 import Tooltip from "./components/Tooltip";
@@ -212,24 +213,23 @@ export default function APIPageClient({ machineId }) {
   const loadSettings = async () => {
     setTunnelChecking(true);
     try {
-      const [settingsRes, statusRes] = await Promise.all([
-        fetch("/api/settings"),
+      const [settingsData, statusRes] = await Promise.all([
+        useSettingsStore.getState().fetchSettings(),
         fetch("/api/tunnel/status", { cache: "no-store" })
       ]);
-      if (settingsRes.ok) {
-        const data = await settingsRes.json();
-        setRequireLogin(data.requireLogin !== false);
-        setHasPassword(data.hasPassword || false);
-        setTunnelDashboardAccess(data.tunnelDashboardAccess || false);
-        setRtkEnabledState(data.rtkEnabled !== false);
-        setHeadroomEnabled(!!data.headroomEnabled);
-        setHeadroomUrl(data.headroomUrl || "http://localhost:8787");
-        setHeadroomCompressUserMessages(!!data.headroomCompressUserMessages);
+      if (settingsData) {
+        setRequireLogin(settingsData.requireLogin !== false);
+        setHasPassword(settingsData.hasPassword || false);
+        setTunnelDashboardAccess(settingsData.tunnelDashboardAccess || false);
+        setRtkEnabledState(settingsData.rtkEnabled !== false);
+        setHeadroomEnabled(!!settingsData.headroomEnabled);
+        setHeadroomUrl(settingsData.headroomUrl || "http://localhost:8787");
+        setHeadroomCompressUserMessages(!!settingsData.headroomCompressUserMessages);
         refreshHeadroomStatus();
-        setCavemanEnabled(!!data.cavemanEnabled);
-        setCavemanLevel(data.cavemanLevel || "full");
-        setPonytailEnabled(!!data.ponytailEnabled);
-        setPonytailLevel(data.ponytailLevel || "full");
+        setCavemanEnabled(!!settingsData.cavemanEnabled);
+        setCavemanLevel(settingsData.cavemanLevel || "full");
+        setPonytailEnabled(!!settingsData.ponytailEnabled);
+        setPonytailLevel(settingsData.ponytailLevel || "full");
       }
       if (statusRes.ok) {
         const data = await statusRes.json();
@@ -255,12 +255,8 @@ export default function APIPageClient({ machineId }) {
 
   const handleTunnelDashboardAccess = async (value) => {
     try {
-      const res = await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tunnelDashboardAccess: value }),
-      });
-      if (res.ok) setTunnelDashboardAccess(value);
+      const updated = await useSettingsStore.getState().patchSettings({ tunnelDashboardAccess: value });
+      if (updated) setTunnelDashboardAccess(value);
     } catch (error) {
       console.log("Error updating tunnelDashboardAccess:", error);
     }
@@ -273,7 +269,11 @@ export default function APIPageClient({ machineId }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ rtkEnabled: value }),
       });
-      if (res.ok) setRtkEnabledState(value);
+      if (res.ok) {
+        setRtkEnabledState(value);
+        // loadSettings now reads the shared settings cache; drop it so a remount re-reads the server
+        useSettingsStore.getState().invalidate();
+      }
     } catch (error) {
       console.log("Error updating rtkEnabled:", error);
     }
@@ -286,6 +286,8 @@ export default function APIPageClient({ machineId }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
       });
+      // loadSettings now reads the shared settings cache; drop it so a remount re-reads the server
+      useSettingsStore.getState().invalidate();
     } catch (error) {
       console.log("Error updating setting:", error);
     }
