@@ -158,15 +158,20 @@ export async function handleChat(request, clientRawRequest = null) {
     });
   }
 
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey);
+  // Direct client request: fromCombo stays false so the unlisted-model guard applies.
+  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, false, contextMarker ? `${modelStr.slice(modelStr.indexOf("/") + 1)}[${contextMarker}]` : null);
 }
 
 /**
  * Handle single model chat request
  * @param {boolean} fromCombo - true when this call is a combo-expansion step; direct
  *   provider/model requests from clients are rejected when LLM combos are configured.
+ * @param {string|null} requestedModel - the model string as the client originally asked for it,
+ *   including any context marker (e.g. `gpt-5[1m]`). Forwarded to account selection so
+ *   per-account enabled-model gating matches on the client-facing name; falls back to the
+ *   resolved provider model when null.
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, fromCombo = false) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, fromCombo = false, requestedModel = null) {
   const modelInfo = await getModelInfo(modelStr);
   const isInternalModelTest = request?.headers?.get("x-9r-model-test") === "1"
     && request?.headers?.get("x-9r-cli-token") === await getConsistentMachineId("9r-cli-auth");
@@ -285,7 +290,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let lastHeaders = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { requestedModel: requestedModel || model });
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
@@ -345,6 +350,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
       onPxpipeEvent: appendPxpipeEvent,
       providerThinking,
+      // Per-provider user overrides (custom headers / connect timeout) from settings
+      providerOverrides: (chatSettings.providerOverrides || {})[provider] || null,
       // Detect source format by endpoint + body
       sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
       onCredentialsRefreshed: async (newCreds) => {

@@ -65,6 +65,8 @@ const DEFAULT_SETTINGS = {
   // usageHistory retention window in days; 0 = keep forever. Owner budgets are
   // unaffected — lifetime spend lives in the ownerSpend aggregate table.
   usageRetentionDays: 0,
+  // Per-provider user header overrides applied at dispatch: { [providerId]: { headers: {..} } }
+  providerOverrides: {},
 };
 
 // getSettings is called several times per request (auth check, chat handler,
