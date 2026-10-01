@@ -54,6 +54,11 @@ const ALWAYS_PROTECTED = [
   "/api/oauth/kiro/auto-import",
   "/api/oauth/xiaomi-mimo/auto-import",
   "/api/oauth/zed/auto-import",
+  // CLI-tool settings routes write a live dashboard API key into host config
+  // files and their GET handlers read those files back, so they must never be
+  // anonymous even when requireLogin is disabled. The CLI launcher sends
+  // x-9r-cli-token, which this list accepts, so `9router` keeps working.
+  "/api/cli-tools",
 ];
 
 // Require auth, but allow through if requireLogin is disabled
@@ -80,6 +85,10 @@ const PROTECTED_API_PATHS = [
 
 // Routes that spawn child processes or read host secrets — restrict to localhost.
 const LOCAL_ONLY_PATHS = [
+  // all-statuses imports cowork-settings' GET and calls it in-process, so the
+  // middleware only ever sees this path; without it the local-only gate on
+  // cowork-settings below is bypassable through the aggregator.
+  "/api/cli-tools/all-statuses",
   "/api/cli-tools/cowork-settings",
   "/api/cli-tools/antigravity-mitm",
   "/api/mcp/",

@@ -19,6 +19,21 @@ const BLOCKED_HEADERS = new Set([
   "transfer-encoding",
   "authorization",
   "cookie",
+  // Provider credential headers: many registry providers authenticate with
+  // these instead of Authorization, so leaving them writable would let an
+  // override silently replace the stored upstream credential.
+  "x-api-key",
+  "x-goog-api-key",
+  "api-key",
+  "proxy-authorization",
+  // Fork trust headers stamped by custom-server.js, and the Vercel relay's
+  // routing headers: never user-controllable.
+  "x-9r-peer-token",
+  "x-9r-real-ip",
+  "x-9r-via-proxy",
+  "x-forwarded-for",
+  "x-relay-target",
+  "x-relay-path",
 ]);
 
 /**

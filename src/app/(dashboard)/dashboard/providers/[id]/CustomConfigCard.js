@@ -6,7 +6,11 @@ import { Card, Badge } from "@/shared/components";
 import { useNotificationStore } from "@/store/notificationStore";
 
 // Mirrors the server-side gate in /api/providers/[id]/overrides — client check is UX only
-const BLOCKED_HEADERS = ["host", "content-length", "content-type", "connection", "transfer-encoding", "authorization", "cookie"];
+// Mirrors BLOCKED_HEADERS in src/app/api/providers/[id]/overrides/route.js.
+// UX only: the server route is the real gate. Keep the two in sync.
+const BLOCKED_HEADERS = ["host", "content-length", "content-type", "connection", "transfer-encoding", "authorization", "cookie",
+  "x-api-key", "x-goog-api-key", "api-key", "proxy-authorization",
+  "x-9r-peer-token", "x-9r-real-ip", "x-9r-via-proxy", "x-forwarded-for", "x-relay-target", "x-relay-path"];
 const HEADER_NAME_RE = /^[A-Za-z0-9-]+$/;
 
 export default function CustomConfigCard({ providerId }) {
