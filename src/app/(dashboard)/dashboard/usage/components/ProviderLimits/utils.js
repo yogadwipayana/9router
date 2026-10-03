@@ -552,25 +552,46 @@ export function parseQuotaData(provider, data) {
 
       case "qoder":
       case "qoder-cn":
-        // Qoder ships a `user` quota and (optionally) an `organization`
-        // quota, both with same shape: {total, used, remaining, unit, resetAt}.
-        // Skip an organization bucket when its total is 0 — most personal
-        // Qoder accounts won't have one and rendering "0/0" is misleading.
+        // Qoder ships a `user` quota plus two optional buckets with the same
+        // shape {total, used, remaining, unit, resetAt}: an `organization`
+        // quota and an `addon` one (campaign rewards — qoder.com's "Bonus
+        // Credits (Total: N)" pack). A bucket the account does not hold reads
+        // total 0 and must be skipped, or most personal accounts get a
+        // misleading "0/0" bar; the `user` plan row is kept either way, since
+        // a free account legitimately has nothing there and should say so.
         // Don't forward Qoder's `remaining` field: it's an absolute credit
         // count, but getRemainingPercentage / QuotaTable interpret
         // `remaining` as a 0-100 percentage and would render 348 credits
         // as "348%". The percentage is computed from used/total instead.
+        // Forward `recurring` so a one-shot bonus pack reads "expires in"
+        // instead of implying it refills with the plan.
+        //
+        // qoder.com lists each reward separately ("Bonus Credits (Total: 100)
+        // … Expires on Oct 20, 2026"), because rewards accumulate and expire on
+        // their own 30-day clocks. That list is web-session-only, so the card
+        // gets the aggregate plus the count the aggregate implies (`packs`,
+        // derived in the usage handler) and says "(N packs)" instead of
+        // pretending one row is one reward. No date: none is readable.
         if (data.quotas) {
           Object.entries(data.quotas).forEach(([quotaType, quota]) => {
-            if (quotaType === "organization" && (!quota || (Number(quota.total) || 0) === 0)) {
-              return;
-            }
+            if (!quota) return;
+            if (quotaType !== "user" && (Number(quota.total) || 0) === 0) return;
+            const addonPacks = Number(quota.packs) || 0;
             normalizedQuotas.push({
-              name: quotaType === "user" ? "Personal" : quotaType === "organization" ? "Organization" : quotaType,
+              name: quotaType === "user"
+                ? "Personal"
+                : quotaType === "organization"
+                  ? "Organization"
+                  : quotaType === "addon"
+                    ? addonPacks > 1
+                      ? `Bonus Credits (${addonPacks} packs)`
+                      : "Bonus Credits"
+                    : quotaType,
               used: quota.used || 0,
               total: quota.total || 0,
               unit: quota.unit,
               resetAt: quota.resetAt || null,
+              recurring: quota.recurring !== false,
             });
           });
         }

@@ -17,7 +17,10 @@
  *     translator layer feeds us "qoder/<key>" so we strip the prefix.
  *   - Per-model `model_config` is fetched live from /algo/api/v2/model/list
  *     and cached. Sending the wrong block silently downgrades to a
- *     different model upstream, so a missing entry is a hard error.
+ *     different model upstream, so an entry we can't supply at all is a
+ *     hard error. Keys that the per-account catalog omits but we have an
+ *     RE'd static block for (Sonus `smodel` / Cantus `cmodel`) fall back to
+ *     that block — see getQoderStaticModelConfig.
  */
 
 import { qoderEncodeBody } from "../shared/qoder/encoding.js";
@@ -33,6 +36,13 @@ import { FETCH_CONNECT_TIMEOUT_MS, HTTP_STATUS } from "../config/runtimeConfig.j
 import {
   QODER_CHAT_SIG_PATH,
   QODER_CONTEXT_TIER_ENV,
+  QODER_QUEUE_CODE,
+  QODER_QUEUE_DEFAULT_RETRIES,
+  QODER_QUEUE_DEFAULT_RETRY_SECONDS,
+  QODER_QUEUE_MAX_RETRIES,
+  QODER_QUEUE_MAX_WAIT_MS,
+  QODER_QUEUE_RETRIES_ENV,
+  getQoderStaticModelConfig,
   qoderInferenceBase,
 } from "../shared/qoder/constants.js";
 import { getQoderModelConfig, resolveQoderModels, isQoderPat, resolveQoderCredentials } from "../services/qoderModels.js";
@@ -41,6 +51,12 @@ import { encodeDataUri } from "../translator/concerns/image.js";
 import { createQoderSseCoalescer } from "../shared/qoder/sse.js";
 import { rewriteQoderMessageAttachments } from "../shared/qoder/attachments.js";
 import { resolveQoderContextTier, applyQoderContextTier } from "../shared/qoder/contextTier.js";
+import { buildQoderPersona, resolvePersonaMode } from "../shared/qoder/persona.js";
+import {
+  buildQoderParameters,
+  qoderThinkingDisablesReasoning,
+  resolveQoderThinking,
+} from "../shared/qoder/reasoning.js";
 
 /**
  * Hoist role:"system" messages out of the messages array (Qoder rejects
@@ -218,12 +234,27 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
     // not be populated yet on first ever call for this credential.
     const refreshed = await resolveQoderModels(credentials, { forceRefresh: true, log, proxyOptions, signal, region });
     const retried = refreshed?.rawConfigs.get(qoderKey);
-    if (!retried) {
+    if (retried) {
+      modelConfig = { ...retried, key: qoderKey };
+    } else {
+      // The per-account catalog doesn't publish this key. This is normal for
+      // the frontier models Sonus (smodel) / Cantus (cmodel), which the plan
+      // exposes in the CLI picker but the model-list API often omits. The chat
+      // endpoint accepts a known key without a catalog entry, so fall back to
+      // the RE'd static block instead of failing the request.
+      modelConfig = getQoderStaticModelConfig(qoderKey);
+      if (modelConfig) {
+        log?.info?.(
+          "QODER",
+          `model_config for "${qoderKey}" missing from catalog; using static fallback (${modelConfig.display_name})`,
+        );
+      }
+    }
+    if (!modelConfig) {
       throw new Error(
         `qoder: model_config for "${qoderKey}" not yet known (run a model list fetch or check upstream connectivity)`,
       );
     }
-    modelConfig = { ...retried, key: qoderKey };
   }
 
   const incoming = Array.isArray(body.messages)
@@ -249,9 +280,26 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
     log?.warn?.("QODER", `attachment rewrite failed: ${err.message}`);
   }
 
-  const { messages, systemText } = normalizeMessages(incoming);
+  const { messages, systemText: callerSystemText } = normalizeMessages(incoming);
   const tools = body.tools;
-  const isReasoning = !!modelConfig.is_reasoning;
+
+  // Ground the request in the qodercli persona. A plain-chat client arrives with
+  // `system: ""` and `tools: []`, so without this the model gets none of the
+  // framing qodercli always sends and reads as design-blind. See
+  // shared/qoder/persona.js (QODER_PERSONA=off|append|replace).
+  const persona = buildQoderPersona({
+    systemText: callerSystemText,
+    tools,
+    mode: resolvePersonaMode(),
+  });
+  const systemText = persona.system;
+  if (persona.persona) {
+    log?.info?.(
+      "QODER",
+      `persona injected (+${Math.max(0, systemText.length - callerSystemText.length)} chars, ${persona.skillCount} skills listed)`,
+    );
+  }
+  let isReasoning = !!modelConfig.is_reasoning;
   const maxOutputTokens = Number(modelConfig.max_output_tokens) || 0;
 
   let maxTokens = 32_768;
@@ -261,6 +309,24 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
   }
   if (typeof body.max_completion_tokens === "number" && body.max_completion_tokens > 0 && body.max_completion_tokens < maxTokens) {
     maxTokens = body.max_completion_tokens;
+  }
+
+  // qodercli derives `parameters` from a generation config; honour the same
+  // thinking intent here instead of silently dropping the client's effort, and
+  // fall back to the gateway default (xhigh for Sonus/Cantus) when the client
+  // expressed none — a plain chat client should still get deep thinking.
+  const thinking = resolveQoderThinking(body, { key: qoderKey, modelConfig });
+  const parameters = buildQoderParameters({ maxTokens, thinking });
+  if (parameters.reasoning_effort || parameters.enable_thinking !== undefined) {
+    log?.info?.(
+      "QODER",
+      `thinking: effort=${parameters.reasoning_effort ?? "(unset)"} source=${thinking?.source ?? "client"} enable_thinking=${parameters.enable_thinking ?? "(unset)"}${parameters.reasoning_budget_tokens ? ` budget=${parameters.reasoning_budget_tokens}` : ""}`,
+    );
+  }
+  if (qoderThinkingDisablesReasoning(parameters)) {
+    isReasoning = false;
+    // Reassign rather than mutate: the catalog entry is shared/cached.
+    modelConfig = { ...modelConfig, is_reasoning: false };
   }
 
   const lastUser = lastUserText(messages);
@@ -305,7 +371,7 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
       system: systemText,
       messages,
       tools: Array.isArray(tools) ? tools : [],
-      parameters: { max_tokens: maxTokens },
+      parameters,
       chat_context: {
         chatPrompt: "",
         imageUrls: null,
@@ -354,6 +420,101 @@ function isBillingBlock(inner) {
 }
 
 /**
+ * Detect Qoder's capacity queue. The payload arrives wrapped in nested JSON strings:
+ *   {"code":"403","message":"{\"code\":\"10605\",\"message\":\"{\\\"isQueued\\\":true,
+ *    \\\"retryAfterSeconds\\\":30,\\\"queueType\\\":\\\"p3\\\",...}\"}"}
+ * Returns { retryAfterSeconds, queueType, modelKey } when it says the request was queued,
+ * else null. A bare {"code":"10605","message":"Queue limit"} carries no retry hint and
+ * stays on the billing path (isBillingBlock).
+ */
+function parseQoderQueue(inner) {
+  let node = inner;
+  let sawQueueCode = false;
+  for (let depth = 0; depth < 8 && node != null; depth++) {
+    if (typeof node === "string") {
+      try { node = JSON.parse(node); } catch { return null; }
+      continue;
+    }
+    if (typeof node !== "object") return null;
+    if (String(node.code ?? "") === QODER_QUEUE_CODE) sawQueueCode = true;
+    if (node.isQueued === true || (sawQueueCode && node.retryAfterSeconds != null)) {
+      const secs = Number(node.retryAfterSeconds ?? node.waitTime);
+      return {
+        retryAfterSeconds: Number.isFinite(secs) && secs > 0 ? secs : QODER_QUEUE_DEFAULT_RETRY_SECONDS,
+        queueType: typeof node.queueType === "string" ? node.queueType : "",
+        modelKey: typeof node.modelKey === "string" ? node.modelKey : "",
+      };
+    }
+    node = node.message;
+  }
+  return null;
+}
+
+function qoderQueueRetries(env = process.env) {
+  const raw = env?.[QODER_QUEUE_RETRIES_ENV];
+  if (raw === undefined || raw === null || String(raw).trim() === "") return QODER_QUEUE_DEFAULT_RETRIES;
+  const n = Number.parseInt(String(raw), 10);
+  if (!Number.isFinite(n) || n < 0) return QODER_QUEUE_DEFAULT_RETRIES;
+  return Math.min(n, QODER_QUEUE_MAX_RETRIES);
+}
+
+// The queue is shared by every account on the same tier, so once one request has waited
+// for a model the next account (or a concurrent request) fails fast instead of stacking
+// another wait. Keyed by region + model key; value = ms epoch until which waits are skipped.
+const queueWaitUntil = new Map();
+
+function claimQueueWait(key, waitMs, now = Date.now()) {
+  if ((queueWaitUntil.get(key) || 0) > now) return false;
+  queueWaitUntil.set(key, now + waitMs);
+  return true;
+}
+
+function waitForQueue(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener?.("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener?.("abort", onAbort, { once: true });
+  });
+}
+
+/** Retry-After (ms) of a queue response built by wrapQoderSSE, or 0 for anything else. */
+function queueRetryAfterMs(response) {
+  if (!response || response.status !== HTTP_STATUS.RATE_LIMITED) return 0;
+  const secs = Number(response.headers?.get?.("Retry-After"));
+  return Number.isFinite(secs) && secs > 0 ? secs * 1000 : 0;
+}
+
+function queueErrorResponse(queue, model) {
+  const retryAfterSeconds = Math.ceil(queue.retryAfterSeconds);
+  const target = queue.modelKey || String(model || "").replace(/^[^/]*\//, "");
+  const tier = queue.queueType ? ` (queue ${queue.queueType})` : "";
+  return new Response(
+    JSON.stringify({
+      error: {
+        message: `qoder capacity queue full for ${target}${tier}, code ${QODER_QUEUE_CODE}; retry after ${retryAfterSeconds}s`,
+        code: QODER_QUEUE_CODE,
+        type: "rate_limit_error",
+        retry_after_seconds: retryAfterSeconds,
+      },
+    }),
+    {
+      status: HTTP_STATUS.RATE_LIMITED,
+      headers: { "Content-Type": "application/json", "Retry-After": String(retryAfterSeconds) },
+    },
+  );
+}
+
+/**
  * Peek the first SSE data line to detect upstream errors before piping.
  * Returns { isError, isBilling, statusVal, message, consumed } — `consumed` is every
  * byte read so far (including the peeked line) so the caller can re-process
@@ -392,7 +553,14 @@ async function peekFirstQoderFrame(reader, decoder) {
       : envelope?.body != null ? JSON.stringify(envelope.body) : "";
 
     if (statusVal !== 200) {
-      return { isError: true, isBilling: isBillingBlock(inner), statusVal, message: inner || `upstream status ${statusVal}` };
+      const queue = parseQoderQueue(inner);
+      return {
+        isError: true,
+        queue,
+        isBilling: !queue && isBillingBlock(inner),
+        statusVal,
+        message: inner || `upstream status ${statusVal}`,
+      };
     }
     return { isError: false, consumed, upstreamDone };
   }
@@ -433,6 +601,9 @@ async function wrapQoderSSE(response, model, log = null) {
   const peek = await peekFirstQoderFrame(reader, decoder);
   if (peek.isError) {
     await reader.cancel().catch(() => {});
+    // Capacity queue → 429 + Retry-After: execute() waits and retries once, and
+    // parseError() turns Retry-After into a lock as short as Qoder asked for.
+    if (peek.queue) return queueErrorResponse(peek.queue, model);
     const status = peek.isBilling
       ? HTTP_STATUS.FORBIDDEN
       : Number.isInteger(peek.statusVal) && peek.statusVal >= HTTP_STATUS.BAD_REQUEST && peek.statusVal <= 599
@@ -662,76 +833,115 @@ export class QoderExecutor extends BaseExecutor {
       return { response: fakeResp, url, headers: {}, transformedBody: body };
     }
 
-    const plainBody = Buffer.from(JSON.stringify(payload), "utf8");
-    const encodedBodyStr = qoderEncodeBody(plainBody);
-    const encodedBodyBuf = Buffer.from(encodedBodyStr, "latin1");
+    const retries = qoderQueueRetries();
+    const waitKey = `${this.region}:${qoderKey}`;
+    for (let attempt = 0; ; attempt++) {
+      // A retry is a new request upstream: fresh request_id and fresh COSY signature
+      // (replaying a signature returns 403/code 103).
+      if (attempt > 0) payload.request_id = uuidv4();
 
-    let cosyHeaders;
-    try {
-      cosyHeaders = buildCosyHeaders(
-        encodedBodyBuf,
-        url,
-        {
-          userId: psd.userId,
-          authToken: credentials.accessToken,
-          name: credentials.displayName || "",
-          email: credentials.email || "",
-          machineId: psd.machineId || "",
-        },
-      );
-    } catch (err) {
-      // cosy.js throws synchronously on missing userId/authToken — surface
-      // as 401 so chatCore prompts re-auth instead of returning a 500.
-      const fakeResp = new Response(
-        JSON.stringify({ error: { message: `qoder cosy signing failed: ${err.message}` } }),
-        { status: 401, headers: { "Content-Type": "application/json" } },
-      );
-      return { response: fakeResp, url, headers: {}, transformedBody: body };
+      const plainBody = Buffer.from(JSON.stringify(payload), "utf8");
+      const encodedBodyStr = qoderEncodeBody(plainBody);
+      const encodedBodyBuf = Buffer.from(encodedBodyStr, "latin1");
+
+      let cosyHeaders;
+      try {
+        cosyHeaders = buildCosyHeaders(
+          encodedBodyBuf,
+          url,
+          {
+            userId: psd.userId,
+            authToken: credentials.accessToken,
+            name: credentials.displayName || "",
+            email: credentials.email || "",
+            machineId: psd.machineId || "",
+          },
+        );
+      } catch (err) {
+        // cosy.js throws synchronously on missing userId/authToken — surface
+        // as 401 so chatCore prompts re-auth instead of returning a 500.
+        const fakeResp = new Response(
+          JSON.stringify({ error: { message: `qoder cosy signing failed: ${err.message}` } }),
+          { status: 401, headers: { "Content-Type": "application/json" } },
+        );
+        return { response: fakeResp, url, headers: {}, transformedBody: body };
+      }
+
+      const modelSource = (payload.model_config && payload.model_config.source) || "system";
+      const headers = {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        "Cache-Control": "no-cache",
+        "X-Model-Key": qoderKey,
+        "X-Model-Source": modelSource,
+        // gzip triggers signature validation on Qoder's CDN; force identity.
+        "Accept-Encoding": "identity",
+        ...cosyHeaders,
+      };
+
+      // Abort if upstream doesn't return response headers within connect timeout.
+      const timeoutMs = this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;
+      const connectCtrl = new AbortController();
+      const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), timeoutMs);
+      const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
+
+      let response;
+      try {
+        response = await proxyAwareFetch(
+          url,
+          { method: "POST", headers, body: encodedBodyBuf, signal: mergedSignal },
+          // A failed proxy request may already have reached Qoder. Replaying
+          // the same COSY signature directly reuses its requestId and returns
+          // 403/code 103. Let the caller retry through execute() with fresh signing.
+          { ...proxyOptions, strictProxy: true },
+        );
+      } catch (err) {
+        // strictProxy wraps transport errors; retain caller cancellation semantics.
+        if (mergedSignal.aborted) throw mergedSignal.reason;
+        throw err;
+      } finally {
+        clearTimeout(connectTimer);
+      }
+
+      if (!response.ok) {
+        // Pass error response through unchanged so chatCore can capture it.
+        return { response, url, headers, transformedBody: payload };
+      }
+
+      const wrapped = await wrapQoderSSE(response, `${this.provider}/${qoderKey}`, log);
+      const retryAfterMs = queueRetryAfterMs(wrapped);
+      if (!retryAfterMs) return { response: wrapped, url, headers, transformedBody: payload };
+
+      const waitMs = Math.min(retryAfterMs, QODER_QUEUE_MAX_WAIT_MS);
+      if (attempt >= retries || !claimQueueWait(waitKey, waitMs)) {
+        // Still queued, or another request is already waiting on this model: the
+        // next account fails fast for the rest of the queue window instead of waiting again.
+        queueWaitUntil.set(waitKey, Math.max(queueWaitUntil.get(waitKey) || 0, Date.now() + retryAfterMs));
+        log?.warn?.("QODER", `capacity queue for ${qoderKey} (attempt ${attempt + 1}); not waiting again`);
+        return { response: wrapped, url, headers, transformedBody: payload };
+      }
+      log?.info?.("QODER", `capacity queue for ${qoderKey}; waiting ${Math.round(waitMs / 1000)}s before retry ${attempt + 1}/${retries}`);
+      await waitForQueue(waitMs, signal);
     }
+  }
 
-    const modelSource = (payload.model_config && payload.model_config.source) || "system";
-    const headers = {
-      "Content-Type": "application/json",
-      Accept: "text/event-stream",
-      "Cache-Control": "no-cache",
-      "X-Model-Key": qoderKey,
-      "X-Model-Source": modelSource,
-      // gzip triggers signature validation on Qoder's CDN; force identity.
-      "Accept-Encoding": "identity",
-      ...cosyHeaders,
-    };
-
-    // Abort if upstream doesn't return response headers within connect timeout.
-    const timeoutMs = this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;
-    const connectCtrl = new AbortController();
-    const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), timeoutMs);
-    const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
-
-    let response;
-    try {
-      response = await proxyAwareFetch(
-        url,
-        { method: "POST", headers, body: encodedBodyBuf, signal: mergedSignal },
-        // A failed proxy request may already have reached Qoder. Replaying
-        // the same COSY signature directly reuses its requestId and returns
-        // 403/code 103. Let the caller retry through execute() with fresh signing.
-        { ...proxyOptions, strictProxy: true },
-      );
-    } catch (err) {
-      // strictProxy wraps transport errors; retain caller cancellation semantics.
-      if (mergedSignal.aborted) throw mergedSignal.reason;
-      throw err;
-    } finally {
-      clearTimeout(connectTimer);
+  // Capacity-queue responses (queueErrorResponse) carry Retry-After: lock the model
+  // for exactly that long instead of the generic 403/429 cooldown.
+  parseError(response, bodyText) {
+    const retryAfterMs = queueRetryAfterMs(response);
+    if (retryAfterMs && bodyText) {
+      try {
+        const err = JSON.parse(bodyText)?.error;
+        if (String(err?.code ?? "") === QODER_QUEUE_CODE) {
+          return {
+            status: response.status,
+            message: err.message || bodyText,
+            resetsAtMs: Date.now() + retryAfterMs,
+          };
+        }
+      } catch { /* fall through to default */ }
     }
-
-    if (!response.ok) {
-      // Pass error response through unchanged so chatCore can capture it.
-      return { response, url, headers, transformedBody: payload };
-    }
-
-    const wrapped = await wrapQoderSSE(response, `${this.provider}/${qoderKey}`, log);
-    return { response: wrapped, url, headers, transformedBody: payload };
+    return super.parseError(response, bodyText);
   }
 
   // Qoder device tokens don't refresh through OAuth — the upstream returns
@@ -755,4 +965,7 @@ export const __test__ = {
   wrapQoderSSE,
   buildQoderRequestBody,
   isBillingBlock,
+  parseQoderQueue,
+  qoderQueueRetries,
+  resetQueueWaits: () => queueWaitUntil.clear(),
 };

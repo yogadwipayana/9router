@@ -118,6 +118,16 @@ export const QODER_CONTEXT_TIER_HEADROOM = 0.15;
 export const QODER_CONTEXT_TIER_ENV = "QODER_CONTEXT_TIER";
 export const QODER_CONTEXT_TIER_MODES = Object.freeze({ AUTO: "auto", MAX: "max", DEFAULT: "default" });
 
+// Capacity queue: code 10605 whose payload says `isQueued` / `retryAfterSeconds`. The model is
+// full for the account's queue tier, not the account broken — wait once, then lock the model
+// only for as long as Qoder asks (see wrapQoderSSE / QoderExecutor.parseError).
+export const QODER_QUEUE_CODE = "10605";
+export const QODER_QUEUE_DEFAULT_RETRY_SECONDS = 30;
+export const QODER_QUEUE_MAX_WAIT_MS = 30_000;
+export const QODER_QUEUE_RETRIES_ENV = "QODER_QUEUE_RETRIES";
+export const QODER_QUEUE_DEFAULT_RETRIES = 1;
+export const QODER_QUEUE_MAX_RETRIES = 3;
+
 /**
  * Job-token (jt-...) traffic must hit api2.qoder.sh — api3 rejects jt- with
  * "Login expired" (403). Device tokens (dt-...) stay on api3. PATs (pt-...)
@@ -166,7 +176,67 @@ export const QODER_MODEL_MAP = {
   gfmodel: "gfmodel",
   kmodel: "kmodel",
   mmodel: "mmodel",
+  // Frontier reasoning models (Sonus / Cantus). Their canonical keys are
+  // `smodel` / `cmodel`; the model picker only ever shows the display names.
+  // Not every account catalog publishes these (see QODER_STATIC_MODEL_CONFIGS).
+  smodel: "smodel",
+  cmodel: "cmodel",
 };
+
+/**
+ * Static `model_config` fallbacks for models the live per-account catalog does
+ * not reliably publish.
+ *
+ * WHY: `/algo/api/v2/model/list` is per-account, and the frontier models
+ * `smodel` (Sonus) and `cmodel` (Cantus) are frequently absent even for accounts
+ * entitled to them. The chat endpoint does NOT validate `model_config.key`
+ * against the catalog — an unknown key is accepted but silently becomes a
+ * non-billable no-op, while a known key runs that model and bills it. Supplying
+ * the block ourselves therefore makes Sonus/Cantus routable regardless of what
+ * the catalog advertises.
+ *
+ * `smodel` is the exact block qodercli logs at request time; `cmodel` mirrors it
+ * (both are 200K / vision / high-reasoning / 3.2x per the CLI model picker).
+ * Both were verified billable at the Sonus/Cantus rate against the live API.
+ *
+ * Note: this is only a *fallback*. The live catalog always wins when it has an
+ * entry — see buildQoderRequestBody in open-sse/executors/qoder.js.
+ */
+const QODER_STATIC_MODEL_CONFIG_BASE = Object.freeze({
+  model: "",
+  format: "openai",
+  source: "system",
+  url: "",
+});
+
+export const QODER_STATIC_MODEL_CONFIGS = Object.freeze({
+  smodel: Object.freeze({
+    ...QODER_STATIC_MODEL_CONFIG_BASE,
+    key: "smodel",
+    display_name: "Sonus",
+    is_vl: true,
+    is_reasoning: true,
+    max_input_tokens: 180000,
+  }),
+  cmodel: Object.freeze({
+    ...QODER_STATIC_MODEL_CONFIG_BASE,
+    key: "cmodel",
+    display_name: "Cantus",
+    is_vl: true,
+    is_reasoning: true,
+    max_input_tokens: 180000,
+  }),
+});
+
+/**
+ * Static `model_config` for a canonical Qoder key, or null when there is no
+ * RE'd block for it (so genuinely unknown keys still fail loudly). Returns a
+ * fresh copy — callers may mutate `key` while aligning the alias path.
+ */
+export function getQoderStaticModelConfig(key) {
+  const cfg = QODER_STATIC_MODEL_CONFIGS[key];
+  return cfg ? { ...cfg, key } : null;
+}
 
 // RSA public key for COSY encryption (extracted from Qoder IDE v0.9).
 // Matches the CLIProxyAPIPlus branch and live qodercli traffic.

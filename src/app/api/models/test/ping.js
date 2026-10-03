@@ -6,6 +6,11 @@ import { getConsistentMachineId } from "@/shared/utils/machineId";
 
 const CLI_TOKEN_SALT = "9r-cli-auth";
 
+const CHAT_PING_TIMEOUT_MS = 15000;
+// Qoder holds a queued request for retryAfterSeconds (30s) before its executor retries
+// once, so its probe needs room for first try + wait + retry.
+const CHAT_PING_TIMEOUT_BY_PROVIDER = { qoder: 90000, "qoder-cn": 90000 };
+
 function createSilentWavFile() {
   const sampleRate = 16000;
   const channels = 1;
@@ -163,6 +168,7 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
     return { ok: true, latencyMs, error: null, status: res.status };
   }
 
+  const providerId = resolveProviderId(String(model).split("/")[0]);
   const res = await fetch(`${baseUrl}/api/v1/chat/completions`, {
     method: "POST",
     headers,
@@ -176,7 +182,7 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
       stream: false,
       messages: [{ role: "user", content: "hi" }],
     }),
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(CHAT_PING_TIMEOUT_BY_PROVIDER[providerId] || CHAT_PING_TIMEOUT_MS),
   });
   const latencyMs = Date.now() - start;
 
@@ -186,7 +192,6 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
 
   // Unwrap before the choices checks below. No-op for providers that do not
   // opt in via transport.quirks.clineEnvelope.
-  const providerId = resolveProviderId(String(model).split("/")[0]);
   parsed = unwrapClineEnvelope(parsed, providerId);
 
   if (!res.ok) {

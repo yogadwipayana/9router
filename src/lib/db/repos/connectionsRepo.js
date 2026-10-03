@@ -86,6 +86,12 @@ function deriveConnectionName(data, fallbackName) {
       || data.providerSpecificData?.githubName
       || fallbackName;
   }
+  if (data.provider === "qoder") {
+    return data.displayName
+      || data.providerSpecificData?.email
+      || data.email
+      || fallbackName;
+  }
   return fallbackName;
 }
 
@@ -143,7 +149,13 @@ export async function createProviderConnection(data) {
     // (O(pool) per key — the other half of the import cost in #4311). The oauth
     // branch below still scans, because its identity rules compare fields
     // inside providerSpecificData and have no single-column equivalent.
-    const isApikey = data.authType === "apikey" && !!data.name;
+    //
+    // qoder apikey rows are the exception: their identity (PAT + userId +
+    // email) also lives in providerSpecificData, so a same-name lookup misses a
+    // re-login that carries a different name and would insert a duplicate row.
+    // That provider keeps the full-pool scan.
+    const identityInSpecificData = data.provider === "qoder";
+    const isApikey = data.authType === "apikey" && !!data.name && !identityInSpecificData;
     const all = isApikey
       ? db.all(
           `SELECT * FROM providerConnections WHERE provider = ? AND authType = ? AND name = ?`,
@@ -155,7 +167,31 @@ export async function createProviderConnection(data) {
       : all.length;
 
     let existing = null;
-    if (data.authType === "oauth" && data.email) {
+    // Set when `existing` matched on the account's own identity (PAT / userId /
+    // email) rather than on the display name. An identity match is the same
+    // account re-added, so it updates the row silently; only a plain name
+    // collision is the #4311 overwrite case.
+    let identityMatch = false;
+
+    if (data.provider === "qoder") {
+      // Qoder rows are keyed by API key (PAT), so an identical PAT pasted twice
+      // must land on the same row; userId and email catch a rotated PAT for an
+      // identity already on the list.
+      const incomingToken = (data.apiKey || data.accessToken || "").trim();
+      const incomingUserId = data.providerSpecificData?.userId || data.userId;
+      const incomingEmail = (data.email || data.providerSpecificData?.email || "").trim().toLowerCase();
+
+      existing = all.find(c => {
+        const cToken = (c.apiKey || c.accessToken || "").trim();
+        if (incomingToken && cToken && incomingToken === cToken) return true;
+        const cUserId = c.providerSpecificData?.userId || c.userId;
+        if (incomingUserId && cUserId && incomingUserId === cUserId) return true;
+        const cEmail = (c.email || c.providerSpecificData?.email || "").trim().toLowerCase();
+        if (incomingEmail && cEmail && incomingEmail === cEmail) return true;
+        return false;
+      });
+      if (existing) identityMatch = true;
+    } else if (data.authType === "oauth" && data.email) {
       const incomingUsername = data.providerSpecificData?.username;
       const incomingWs = data.providerSpecificData?.chatgptAccountId;
       existing = all.find(c => {
@@ -199,7 +235,11 @@ export async function createProviderConnection(data) {
       // destroyed existing pool entries with no 409 and no warning. Callers that
       // genuinely mean "update this one" pass allowOverwrite; everyone else gets
       // a typed error naming the row that would have been replaced. #4311
-      if (data.allowOverwrite === false) {
+      //
+      // An identity match is not a collision: the same Qoder PAT (or
+      // userId/email) re-added must keep updating its own row quietly, however
+      // the caller named it this time.
+      if (data.allowOverwrite === false && !identityMatch) {
         const err = new Error(
           `A connection named "${existing.name}" already exists for provider "${data.provider}". ` +
           `Pass allowOverwrite: true to replace it.`
