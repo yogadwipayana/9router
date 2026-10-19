@@ -6,9 +6,10 @@ import { ownerSpendPgAvailable, disableOwnerSpendPg } from "../helpers/ownerSpen
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
-  if (key.length <= 12) return key.charAt(0) + "***";
+  const trimmed = key.trim();
+  if (trimmed.length <= 12) return trimmed.charAt(0) + "***";
   // Keep the tail: keys sharing a machine-id prefix (team keys) must not collide.
-  return key.slice(0, 8) + "***" + key.slice(-4);
+  return trimmed.slice(0, 8) + "***" + trimmed.slice(-4);
 }
 
 const PENDING_TIMEOUT_MS = 60 * 1000;
@@ -257,7 +258,11 @@ async function getApiKeyMapCached() {
     const { getApiKeys } = await import("./apiKeysRepo.js");
     const all = await getApiKeys();
     const map = {};
-    for (const k of all) map[k.key] = { name: k.name, id: k.id, createdAt: k.createdAt, owner: k.owner || null };
+    // Key by the trimmed API key so whitespace variants resolve and mask
+    // consistently (upstream 813a0121): getUsageStats trims before lookup.
+    for (const k of all) {
+      if (k.key) map[k.key.trim()] = { name: k.name, id: k.id, createdAt: k.createdAt, owner: k.owner || null };
+    }
 
     // Temp keys (Postgres-only): surface a recognizable "Temp: <name>" label in
     // the usage dashboard. Empty name → leave null so consumers fall back to the
@@ -268,7 +273,8 @@ async function getApiKeyMapCached() {
         const { getTempApiKeys } = await import("./tempApiKeysRepo.js");
         const temps = await getTempApiKeys();
         for (const t of temps) {
-          map[t.key] = {
+          if (!t.key) continue;
+          map[t.key.trim()] = {
             name: t.name ? `Temp: ${t.name}` : null,
             id: t.id,
             createdAt: t.createdAt,
@@ -312,8 +318,8 @@ async function getTempApiKeyMapCached() {
 
 function resolveKeyName(apiKey, apiKeyMap) {
   if (!apiKey || typeof apiKey !== "string") return "Local";
-  const info = apiKeyMap[apiKey];
-  return info?.name || apiKey.slice(0, 8) + "...";
+  const info = apiKeyMap[apiKey.trim()];
+  return info?.name || apiKey.trim().slice(0, 8) + "...";
 }
 
 async function ensureRingInitialized() {
@@ -510,7 +516,7 @@ export async function saveRequestUsage(entry) {
     if (!owner && entry.apiKey) {
       try {
         const map = await getApiKeyMapCached();
-        const info = map[entry.apiKey];
+        const info = map[entry.apiKey.trim()];
         if (info?.owner) owner = String(info.owner).trim().toLowerCase() || null;
       } catch {}
     }
@@ -912,10 +918,10 @@ export async function getUsageStats(period = "all") {
         const rawModel = ak.rawModel || "";
         const provider = ak.provider || "";
         const providerDisplayName = providerNodeNameMap[provider] || provider;
-        const apiKeyVal = ak.apiKey;
+        const apiKeyVal = ak.apiKey ? ak.apiKey.trim() : null;
         const keyInfo = apiKeyVal ? apiKeyMap[apiKeyVal] : null;
-        const keyName = keyInfo?.name || (apiKeyVal ? apiKeyVal.slice(0, 8) + "..." : "Local (No API Key)");
         const apiKeyMasked = maskApiKey(apiKeyVal);
+        const keyName = keyInfo?.name || (apiKeyVal ? (apiKeyMasked || apiKeyVal.slice(0, 8) + "...") : "Local (No API Key)");
         const apiKeyKey = apiKeyMasked || "local-no-key";
         if (!stats.byApiKey[akKey]) {
           stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey, lastUsed: dateKey };
@@ -1108,9 +1114,10 @@ export async function getUsageStats(period = "all") {
       }
 
       if (r.apiKey && typeof r.apiKey === "string") {
-        const keyInfo = apiKeyMap[r.apiKey];
-        const keyName = keyInfo?.name || r.apiKey.slice(0, 8) + "...";
-        const apiKeyMasked = maskApiKey(r.apiKey);
+        const apiKeyVal = r.apiKey.trim();
+        const keyInfo = apiKeyMap[apiKeyVal];
+        const apiKeyMasked = maskApiKey(apiKeyVal);
+        const keyName = keyInfo?.name || apiKeyMasked || r.apiKey.slice(0, 8) + "...";
         // Key by the FULL api key (same as the daily rollup + lastUsed overlay)
         // — masking here collided all keys sharing a prefix into one bucket.
         const akKey = `${r.apiKey}|${r.model}|${r.provider || "unknown"}`;

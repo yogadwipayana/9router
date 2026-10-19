@@ -555,10 +555,14 @@ export function parseQuotaData(provider, data) {
         // Qoder ships a `user` quota plus two optional buckets with the same
         // shape {total, used, remaining, unit, resetAt}: an `organization`
         // quota and an `addon` one (campaign rewards — qoder.com's "Bonus
-        // Credits (Total: N)" pack). A bucket the account does not hold reads
-        // total 0 and must be skipped, or most personal accounts get a
-        // misleading "0/0" bar; the `user` plan row is kept either way, since
-        // a free account legitimately has nothing there and should say so.
+        // Credits (Total: N)" pack; upstream calls the same bucket `addOn`, so
+        // both spellings are accepted below). A bucket the account does not
+        // hold reads total 0 and must be skipped, or most personal accounts get
+        // a misleading "0/0" bar; the `user` plan row is kept either way, since
+        // a free account legitimately has nothing there and should say so — a
+        // `personal_standard` account whose grant lives entirely in the add-on
+        // bucket therefore shows an empty plan row *next to* its bonus row,
+        // rather than no plan row at all.
         // Don't forward Qoder's `remaining` field: it's an absolute credit
         // count, but getRemainingPercentage / QuotaTable interpret
         // `remaining` as a 0-100 percentage and would render 348 credits
@@ -571,18 +575,21 @@ export function parseQuotaData(provider, data) {
         // their own 30-day clocks. That list is web-session-only, so the card
         // gets the aggregate plus the count the aggregate implies (`packs`,
         // derived in the usage handler) and says "(N packs)" instead of
-        // pretending one row is one reward. No date: none is readable.
+        // pretending one row is one reward. No date is readable here — the row
+        // falls back to `detailUrl` ("See details", a link to Qoder's own usage
+        // page) when the payload carries one.
         if (data.quotas) {
           Object.entries(data.quotas).forEach(([quotaType, quota]) => {
             if (!quota) return;
             if (quotaType !== "user" && (Number(quota.total) || 0) === 0) return;
+            const isAddon = quotaType === "addon" || quotaType === "addOn";
             const addonPacks = Number(quota.packs) || 0;
             normalizedQuotas.push({
               name: quotaType === "user"
                 ? "Personal"
                 : quotaType === "organization"
                   ? "Organization"
-                  : quotaType === "addon"
+                  : isAddon
                     ? addonPacks > 1
                       ? `Bonus Credits (${addonPacks} packs)`
                       : "Bonus Credits"
@@ -592,6 +599,12 @@ export function parseQuotaData(provider, data) {
               unit: quota.unit,
               resetAt: quota.resetAt || null,
               recurring: quota.recurring !== false,
+              // Qoder reports open-ended plans as a 9999 sentinel; the service
+              // turns that into neverExpires so the row can read
+              // "Never expires" instead of "N/A" or a year-9999 date.
+              neverExpires: quota.neverExpires === true,
+              // Present on add-on credits: links to Qoder's own usage page.
+              detailUrl: quota.detailUrl || null,
             });
           });
         }
@@ -707,6 +720,22 @@ export function parseQuotaData(provider, data) {
         }
         break;
 
+      case "cursor":
+        // Plan spend is USD (cents from GetCurrentPeriodUsage). Forward
+        // remainingPercentage only — do not pass absolute remaining (UI treats it as %).
+        if (data.quotas) {
+          Object.entries(data.quotas).forEach(([name, quota]) => {
+            normalizedQuotas.push({
+              name,
+              used: quota.used || 0,
+              total: quota.total || 0,
+              resetAt: quota.resetAt || null,
+              remainingPercentage: quota.remainingPercentage,
+            });
+          });
+        }
+        break;
+
       case "groq":
         // Requests/Tokens rate-limit windows from response headers — absolute
         // used/total (calculatePercentage derives the bar), like Codex/Kiro.
@@ -749,6 +778,28 @@ export function parseQuotaData(provider, data) {
               resetAt: quota.resetAt || null,
               remainingPercentage: quota.remainingPercentage,
               unlimited: quota.unlimited,
+            });
+          });
+        }
+        break;
+
+      case "minimax-code":
+      case "minimax-code-global":
+        // Service already returns dashboard-shaped rows: a credits balance
+        // (isCreditBalance → 💰 with the amount as total) plus M Plan rate
+        // windows as 0-100 percent rows. Pass through, preserving extras.
+        if (data.quotas) {
+          Object.entries(data.quotas).forEach(([name, quota]) => {
+            normalizedQuotas.push({
+              name,
+              used: quota.used || 0,
+              total: quota.total || 0,
+              remaining: quota.remaining,
+              remainingPercentage: quota.remainingPercentage,
+              resetAt: quota.resetAt || null,
+              message: quota.message,
+              isCreditBalance: quota.isCreditBalance,
+              currency: quota.currency,
             });
           });
         }

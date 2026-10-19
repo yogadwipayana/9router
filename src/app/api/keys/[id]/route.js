@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getPrisma, hasPrismaDatabaseUrl } from "@/lib/prisma";
+import { validateKeyAccessInput } from "@/shared/utils/keyAccess.js";
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -44,7 +45,7 @@ export async function PUT(request, { params }) {
   try {
     const { id } = await params;
     const body = await request.json();
-    const { isActive } = body;
+    const { isActive, access } = body;
     const emailInput = body.userEmail ?? body.owner;
 
     const prisma = getPostgresPrisma();
@@ -68,6 +69,18 @@ export async function PUT(request, { params }) {
         return NextResponse.json({ error: "Create this user before assigning API keys" }, { status: 400 });
       }
       updateData.owner = userEmail;
+    }
+    if (access !== undefined) {
+      const checked = validateKeyAccessInput(access);
+      if (!checked.ok) return NextResponse.json({ error: checked.error }, { status: 400 });
+      // Per-key access control persists in the SQLite apiKeys
+      // accessRestricted/accessAllow columns. Dashboard keys live in Postgres
+      // here and the Prisma ApiKey model has no such fields, so a restriction
+      // cannot be stored — refuse it loudly rather than dropping it silently,
+      // which would leave the key fully open while the UI showed it locked.
+      if (checked.value.restricted) {
+        return NextResponse.json({ error: "Per-key access restrictions are not supported by the Postgres key store" }, { status: 501 });
+      }
     }
 
     const updated = await prisma.apiKey.update({ where: { id }, data: updateData });

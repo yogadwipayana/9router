@@ -207,7 +207,12 @@ function getGroupKey(item, keyField) {
         "Unknown Account"
       );
     case "keyName":
-      return item.keyName || "Unknown Key";
+      // Two keys may share a display name, which collapsed them into one
+      // group. Disambiguate with the MASKED key (never the raw key) when the
+      // row carries one.
+      return item.apiKeyMasked
+        ? `${item.keyName} (${item.apiKeyMasked})`
+        : item.keyName || "Unknown Key";
     case "endpoint":
       return item.endpoint || "Unknown Endpoint";
     default:
@@ -571,7 +576,14 @@ export default function UsageStats({
           ),
           renderDetailCells: (item) => (
             <>
-              <td className="px-6 py-3 font-medium">{item.keyName}</td>
+              <td className="px-6 py-3 font-medium">
+                {item.keyName}
+                {item.apiKeyMasked && item.apiKeyMasked !== item.keyName ? (
+                  <span className="ml-1.5 font-mono text-xs text-text-muted">
+                    {item.apiKeyMasked}
+                  </span>
+                ) : null}
+              </td>
               <td className="px-6 py-3">{item.rawModel}</td>
               <td className="px-6 py-3">
                 <Badge variant="neutral" size="sm">

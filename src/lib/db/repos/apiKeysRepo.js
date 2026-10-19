@@ -1,6 +1,8 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { getPrisma, usePostgresOperationalData } from "../../prisma.js";
+import { keyAccessFromColumns, keyAccessToColumns } from "@/shared/utils/keyAccess.js";
+import { KEY_ACCESS_UNRESTRICTED } from "@/shared/constants/keyAccess.js";
 
 function rowToKey(row) {
   if (!row) return null;
@@ -13,6 +15,7 @@ function rowToKey(row) {
     machineId: row.machineId,
     isActive: row.isActive === 1 || row.isActive === true,
     createdAt: row.createdAt,
+    access: keyAccessFromColumns(row.accessRestricted, row.accessAllow),
   };
 }
 
@@ -81,6 +84,19 @@ export async function getApiKeyAccessState(key) {
   return { valid: true, apiKey, owner };
 }
 
+// Used by the /v1 handlers to read the presented key's access settings.
+export async function getApiKeyByKey(key) {
+  if (!key) return null;
+  if (usePostgresOperationalData()) {
+    const row = await getPrisma().apiKey.findUnique({ where: { key } });
+    return rowToKey(row);
+  }
+
+  const db = await getAdapter();
+  const row = db.get(`SELECT * FROM apiKeys WHERE key = ?`, [key]);
+  return rowToKey(row);
+}
+
 export async function createApiKey(name, machineId, owner = null) {
   if (!machineId) throw new Error("machineId is required");
   const { generateApiKeyWithMachine } = await import("@/shared/utils/apiKey");
@@ -95,9 +111,13 @@ export async function createApiKey(name, machineId, owner = null) {
     userEmail: normalizedOwner || null,
     isActive: true,
     createdAt: new Date().toISOString(),
+    access: { restricted: false, allow: [] },
   };
 
   if (usePostgresOperationalData()) {
+    // The Prisma ApiKey model has no accessRestricted/accessAllow columns,
+    // so a key created in Postgres mode is unrestricted — the same default
+    // the SQLite path writes below.
     await getPrisma().apiKey.create({
       data: {
         id: apiKey.id,
@@ -113,9 +133,10 @@ export async function createApiKey(name, machineId, owner = null) {
   }
 
   const db = await getAdapter();
+  const cols = keyAccessToColumns(KEY_ACCESS_UNRESTRICTED);
   db.run(
-    `INSERT INTO apiKeys(id, key, name, owner, machineId, isActive, createdAt) VALUES(?, ?, ?, ?, ?, ?, ?)`,
-    [apiKey.id, apiKey.key, apiKey.name, apiKey.owner, apiKey.machineId, 1, apiKey.createdAt]
+    `INSERT INTO apiKeys(id, key, name, owner, machineId, isActive, createdAt, accessRestricted, accessAllow) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [apiKey.id, apiKey.key, apiKey.name, apiKey.owner, apiKey.machineId, 1, apiKey.createdAt, cols.accessRestricted, cols.accessAllow]
   );
   return apiKey;
 }
@@ -132,6 +153,9 @@ export async function updateApiKey(id, data) {
     const row = await prisma.apiKey.findUnique({ where: { id } });
     if (!row) return null;
     const merged = { ...rowToKey(row), ...data };
+    // NOTE: the Prisma ApiKey model has no accessRestricted/accessAllow
+    // columns, so a per-key access change cannot be persisted in Postgres
+    // mode; the returned key reports the stored (unrestricted) state.
     const updated = await prisma.apiKey.update({
       where: { id },
       data: {
@@ -151,11 +175,12 @@ export async function updateApiKey(id, data) {
     const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
     if (!row) return;
     const merged = { ...rowToKey(row), ...data };
+    const cols = keyAccessToColumns(merged.access);
     db.run(
-      `UPDATE apiKeys SET key = ?, name = ?, owner = ?, machineId = ?, isActive = ? WHERE id = ?`,
-      [merged.key, merged.name, merged.owner || null, merged.machineId, merged.isActive ? 1 : 0, id]
+      `UPDATE apiKeys SET key = ?, name = ?, owner = ?, machineId = ?, isActive = ?, accessRestricted = ?, accessAllow = ? WHERE id = ?`,
+      [merged.key, merged.name, merged.owner || null, merged.machineId, merged.isActive ? 1 : 0, cols.accessRestricted, cols.accessAllow, id]
     );
-    result = merged;
+    result = rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
   });
   return result;
 }

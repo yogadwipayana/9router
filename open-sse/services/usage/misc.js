@@ -255,13 +255,26 @@ export async function getQoderUsage(accessToken, proxyOptions = null, providerId
     // siblings so the dashboard parser doesn't try to render them as rows.
     const userQuota = body.userQuota || {};
     const orgQuota = body.orgResourcePackage || {};
+    // Add-on credits (free grants / promos). Qoder emits this block only when
+    // the account actually holds a grant — an account that never redeemed one,
+    // or consumed it, omits the key entirely. Verified against both regions:
+    // qoder CN returns it (e.g. 2200 total) after redeeming the free-credit
+    // promo, while an intl account without a grant has no such key. Gating on
+    // total > 0 keeps the intl/no-grant shape byte-identical to before.
+    const addOnQuota = body.addOnQuota || {};
+    const addOnTotal = Number(addOnQuota.total) || 0;
     // Qoder publishes a single absolute reset timestamp (`expiresAt` in ms);
     // surface it on every quota record as ISO so the table can render
-    // "resets at" alongside used/total.
+    // "resets at" alongside used/total. 253402214400000 (9999-12-31T00:00:00Z)
+    // is Qoder's "never expires" sentinel, returned by both regions for
+    // open-ended plans — rendering a reset date in the year 9999 is noise, so
+    // flag it instead and let the tracker word it as "Never expires".
     const expiresAtMs = Number.isFinite(Number(body.expiresAt)) && Number(body.expiresAt) > 0
       ? Number(body.expiresAt)
       : null;
-    const resetAt = expiresAtMs ? new Date(expiresAtMs).toISOString() : null;
+    const NO_RESET_SENTINEL_MS = 253402214400000;
+    const neverExpires = expiresAtMs === NO_RESET_SENTINEL_MS;
+    const resetAt = expiresAtMs && !neverExpires ? new Date(expiresAtMs).toISOString() : null;
     const quotas = {
       user: {
         total: Number(userQuota.total) || 0,
@@ -269,6 +282,7 @@ export async function getQoderUsage(accessToken, proxyOptions = null, providerId
         remaining: Number(userQuota.remaining) || 0,
         unit: userQuota.unit || "credits",
         resetAt,
+        neverExpires,
       },
       organization: {
         total: Number(orgQuota.total) || 0,
@@ -276,6 +290,7 @@ export async function getQoderUsage(accessToken, proxyOptions = null, providerId
         remaining: Number(orgQuota.remaining) || 0,
         unit: orgQuota.unit || "credits",
         resetAt,
+        neverExpires,
       },
     };
     // Add-on credits — where campaign rewards land. qoder.com labels the bucket
@@ -290,7 +305,8 @@ export async function getQoderUsage(accessToken, proxyOptions = null, providerId
     // `recurring: false` and no `resetAt`: a pack is a one-shot grant with its
     // own expiry date, which this payload does not carry — the `expiresAt`
     // above is the *plan's* reset, so stamping it here would claim the bonus
-    // refills whenever the plan does.
+    // refills whenever the plan does. `neverExpires: false` says the same thing
+    // to the sentinel-aware renderer: a pack is not an open-ended plan.
     //
     // `packs` is the one thing about the *number* of rewards that is
     // recoverable here. docs.qoder.com/events/100credits: claimed Credits
@@ -305,8 +321,11 @@ export async function getQoderUsage(accessToken, proxyOptions = null, providerId
     // wrong kind), and no token-surface route carries a pack date (measured: the
     // /api/v2, /sash and center equivalents are 404, and `Cosy-ClientType` 1-20
     // changes nothing). So: report the count, never a date that cannot be read.
-    const addOnQuota = body.addOnQuota || {};
-    const addOnTotal = Number(addOnQuota.total) || 0;
+    //
+    // `detailUrl` is the one *date* escape hatch: when Qoder itself hands back a
+    // link to its usage page (upstream observed this on the CN promo payload),
+    // forward it so the row can offer "See details" instead of a bare "N/A".
+    // It stays null when absent, which is the fork's measured intl case.
     if (addOnTotal > 0) {
       quotas.addon = {
         total: addOnTotal,
@@ -316,6 +335,8 @@ export async function getQoderUsage(accessToken, proxyOptions = null, providerId
         resetAt: null,
         recurring: false,
         packs: addOnTotal % 100 === 0 ? addOnTotal / 100 : 1,
+        neverExpires: false,
+        detailUrl: addOnQuota.detailUrl || null,
       };
     }
     return {
