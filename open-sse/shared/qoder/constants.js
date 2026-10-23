@@ -177,8 +177,9 @@ export const QODER_MODEL_MAP = {
   kmodel: "kmodel",
   mmodel: "mmodel",
   // Frontier reasoning models (Sonus / Cantus). Their canonical keys are
-  // `smodel` / `cmodel`; the model picker only ever shows the display names.
-  // Not every account catalog publishes these (see QODER_STATIC_MODEL_CONFIGS).
+  // `smodel` / `cmodel`; the Qoder model picker only ever shows the display
+  // names. The per-account catalog frequently omits them even for accounts
+  // entitled to use them — see QODER_STATIC_MODEL_CONFIGS below.
   smodel: "smodel",
   cmodel: "cmodel",
 };
@@ -189,18 +190,23 @@ export const QODER_MODEL_MAP = {
  *
  * WHY: `/algo/api/v2/model/list` is per-account, and the frontier models
  * `smodel` (Sonus) and `cmodel` (Cantus) are frequently absent even for accounts
- * entitled to them. The chat endpoint does NOT validate `model_config.key`
- * against the catalog — an unknown key is accepted but silently becomes a
- * non-billable no-op, while a known key runs that model and bills it. Supplying
- * the block ourselves therefore makes Sonus/Cantus routable regardless of what
- * the catalog advertises.
+ * entitled to them. Without a `model_config` the executor refuses the request
+ * before it is ever sent ("model_config for ... not yet known"), so the model
+ * looks unavailable when upstream would have served it. The chat endpoint does
+ * NOT validate `model_config.key` against the catalog — an unknown key is
+ * accepted but silently becomes a non-billable no-op, while a known key runs
+ * that model and bills it. Supplying the block ourselves therefore makes
+ * Sonus/Cantus routable regardless of what the catalog advertises.
  *
  * `smodel` is the exact block qodercli logs at request time; `cmodel` mirrors it
  * (both are 200K / vision / high-reasoning / 3.2x per the CLI model picker).
- * Both were verified billable at the Sonus/Cantus rate against the live API.
+ * Both were verified billable at the Sonus/Cantus rate against the live API, and
+ * upstream tracks them as distinct queue entries (queue/status echoes
+ * modelKey=smodel / modelKey=cmodel).
  *
  * Note: this is only a *fallback*. The live catalog always wins when it has an
- * entry — see buildQoderRequestBody in open-sse/executors/qoder.js.
+ * entry, so a future catalog that publishes its own block for these keys takes
+ * precedence — see buildQoderRequestBody in open-sse/executors/qoder.js.
  */
 const QODER_STATIC_MODEL_CONFIG_BASE = Object.freeze({
   model: "",

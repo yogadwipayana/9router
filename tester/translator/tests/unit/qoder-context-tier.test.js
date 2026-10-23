@@ -180,8 +180,10 @@ describe("routableQoderModels", () => {
         ["dmodel", { key: "dmodel", enable: false }],
       ]),
     };
-    // Sonus/Cantus are not in this catalog, so their static fallback blocks
-    // keep them advertised ahead of the live entries.
+    // Sonus (smodel) / Cantus (cmodel) are absent from this catalog, but the
+    // executor still routes them via QODER_STATIC_MODEL_CONFIGS, so their static
+    // fallback blocks keep them advertised ahead of the live entries instead of
+    // vanishing from /v1/models.
     expect(routableQoderModels(catalog)).toEqual([
       { id: "smodel", name: "Sonus", hidden: false },
       { id: "cmodel", name: "Cantus", hidden: false },
@@ -200,6 +202,19 @@ describe("routableQoderModels", () => {
     expect(ids.filter((id) => id === "smodel")).toHaveLength(1);
     // The catalog entry (and its name) wins over the static block.
     expect(routableQoderModels(catalog).find((m) => m.id === "smodel").name).toBe("Sonus (live)");
+  });
+
+  it("lets a catalog entry win over the static block for the same key", () => {
+    const catalog = {
+      models: [{ id: "smodel", name: "Sonus from catalog" }],
+      rawConfigs: new Map(),
+    };
+    const out = routableQoderModels(catalog);
+    expect(out.filter((m) => m.id === "smodel")).toEqual([
+      { id: "smodel", name: "Sonus from catalog", hidden: false },
+    ]);
+    // cmodel is still absent upstream, so the static entry covers it.
+    expect(out.some((m) => m.id === "cmodel")).toBe(true);
   });
 
   it("returns [] for a failed catalog fetch", () => {

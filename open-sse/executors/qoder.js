@@ -24,7 +24,6 @@
  */
 
 import { qoderEncodeBody } from "../shared/qoder/encoding.js";
-import { buildCosyHeaders } from "../shared/qoder/cosy.js";
 import { v4 as uuidv4 } from "uuid";
 import { createHash } from "crypto";
 
@@ -48,6 +47,7 @@ import {
 import { getQoderModelConfig, resolveQoderModels, isQoderPat, resolveQoderCredentials } from "../services/qoderModels.js";
 import { OPENAI_BLOCK, CLAUDE_BLOCK } from "../translator/schema/blocks.js";
 import { encodeDataUri } from "../translator/concerns/image.js";
+import { buildCosyHeaders, deriveMachineId } from "../shared/qoder/cosy.js";
 import { createQoderSseCoalescer } from "../shared/qoder/sse.js";
 import { rewriteQoderMessageAttachments } from "../shared/qoder/attachments.js";
 import { resolveQoderContextTier, applyQoderContextTier } from "../shared/qoder/contextTier.js";
@@ -402,21 +402,29 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
 
 /**
  * Check if a qoder error message indicates a billing/quota block.
+ *
  * Signatures: code 110 (billing daily count exceeded), code 112 (quota
- * exhausted), code 10605 (queue throttle), pricingUrl field.
+ * exhausted), or a `pricingUrl` field.
+ *
+ * Code 10605 is deliberately NOT here. It is the model-queue throttle
+ * (`isQueued` / `RESOURCE_LIMIT`), a transient capacity signal: the model is
+ * briefly unavailable and the very same request succeeds once it drains. The
+ * billing branch turns the frame into a 403, chatCore reads 403 as
+ * insufficient_quota and locks the model for minutes, so a queued request used
+ * to fail permanently instead of waiting ~30s. See shared/qoder/queue.js.
  */
 function isBillingBlock(inner) {
   if (!inner || typeof inner !== "string") return false;
   const lowerMsg = inner.toLowerCase();
   if (lowerMsg.includes("pricingurl")) return true;
-  // Parsed code preferred over regex: matches numeric or string "110"/"112"/"10605".
+  // Parsed code preferred over regex: matches numeric or string "110"/"112".
   try {
     const parsed = JSON.parse(inner);
     const code = String(parsed?.code ?? "");
-    if (code === "110" || code === "112" || code === "10605") return true;
+    if (code === "110" || code === "112") return true;
   } catch { /* not JSON — fall through to legacy shape match */ }
-  // Match legacy exact shapes: {"code":"112",...}, {"code":"10605",...}.
-  return /"code"\s*:\s*"(112|10605)"/.test(inner);
+  // Match legacy exact shape: {"code":"112",...}.
+  return /"code"\s*:\s*"112"/.test(inner);
 }
 
 /**
@@ -470,6 +478,8 @@ function claimQueueWait(key, waitMs, now = Date.now()) {
 }
 
 function waitForQueue(ms, signal) {
+  // Nothing to wait for (folded in from upstream v0.5.109 sleep()).
+  if (!(ms > 0)) return Promise.resolve();
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(signal.reason);
@@ -854,7 +864,10 @@ export class QoderExecutor extends BaseExecutor {
             authToken: credentials.accessToken,
             name: credentials.displayName || "",
             email: credentials.email || "",
-            machineId: psd.machineId || "",
+            // PAT connections store no machine id. A random uuid per request
+            // makes each call look like a brand-new device, and a new device
+            // rejoins the back of the model queue. Derive a stable one instead.
+            machineId: psd.machineId || deriveMachineId(psd.userId),
           },
         );
       } catch (err) {

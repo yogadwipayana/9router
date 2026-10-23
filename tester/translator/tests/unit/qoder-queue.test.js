@@ -1,13 +1,35 @@
 /**
- * Qoder capacity queue (code 10605 with isQueued / retryAfterSeconds).
+ * Qoder model queue (code 10605 with isQueued / retryAfterSeconds).
  *
  * The queue means the model is full for the account's tier, not that the account is
  * broken: the executor waits retryAfterSeconds and retries once with a fresh signature,
  * then hands chatCore a 429 + Retry-After so the model is locked only that long.
+ *
+ * Both sides of the v0.5.109 merge created this file independently, for two
+ * different layers; the union of their cases is kept here.
+ *
+ *   1. The executor-level queue retry (fork): parseQoderQueue, qoderQueueRetries,
+ *      wrapQoderSSE's 429 + Retry-After, QoderExecutor.parseError's short model
+ *      lock and the wait/retry loop in QoderExecutor.execute.
+ *   2. The pure helpers in shared/qoder/queue.js (upstream v0.5.109):
+ *      parseQoderQueueInfo, isQoderQueuedBody, computeQoderQueueDelayMs,
+ *      qoderQueueStatusUrl, parseQoderQueueStatus and qoderQueueMaxWaitMs. Those
+ *      payloads are the real ones Qoder returns (2026-10-19) for a queued model: a
+ *      `{statusCodeValue, body}` SSE envelope whose body nests the queue object
+ *      inside two more JSON strings. They are matched on content, never on exact
+ *      byte shape, because the nesting depth varies by endpoint.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-
+import {
+  QODER_QUEUE_CODE,
+  computeQoderQueueDelayMs,
+  isQoderQueuedBody,
+  parseQoderQueueInfo,
+  parseQoderQueueStatus,
+  qoderQueueMaxWaitMs,
+  qoderQueueStatusUrl,
+} from "../../open-sse/shared/qoder/queue.js";
 vi.mock("../../open-sse/services/qoderModels.js", () => ({
   getQoderModelConfig: vi.fn(async () => ({ key: "qmodel_38max", max_output_tokens: 32 })),
   resolveQoderModels: vi.fn(),
@@ -87,11 +109,21 @@ describe("parseQoderQueue", () => {
     });
   });
 
-  it("leaves a bare 10605 without a retry hint on the billing path", async () => {
+  it("does not take the retry path for a bare 10605 without a retry hint", async () => {
     const { internals } = await loadExecutor(vi.fn());
     const bare = '{"code":"10605","message":"Queue limit"}';
+    // No isQueued / retryAfterSeconds hint, so there is nothing to wait for and
+    // execute() must not enter the queue retry loop for this frame.
     expect(internals.parseQoderQueue(bare)).toBeNull();
-    expect(internals.isBillingBlock(bare)).toBe(true);
+    // MERGE NOTE (v0.5.109): this used to assert isBillingBlock(bare) === true.
+    // Upstream removed 10605 from isBillingBlock (it is the transient model-queue
+    // throttle, never a billing block) in a NON-conflicting hunk, so that change
+    // auto-merged, and qoder-billing.test.js now pins isBillingBlock(bare) ===
+    // false. The runtime outcome is unchanged either way: wrapQoderSSE keeps the
+    // envelope's own 4xx for this frame, it just no longer rewrites it to 403
+    // through the billing branch. The queue-side half of this case is the part
+    // that pins executor behaviour, so it is kept as-is.
+    expect(internals.isBillingBlock(bare)).toBe(false);
   });
 
   it("ignores billing blocks and non-JSON bodies", async () => {
@@ -207,5 +239,213 @@ describe("QoderExecutor.execute on a queued model", () => {
     const { executor } = await loadExecutor(fetchMock);
     await expect(executor.execute({ ...request, signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shared/qoder/queue.js helpers (upstream v0.5.109). Pure parsers with no
+// executor involvement, so they stand alongside the executor-level cases
+// above rather than replacing them.
+// ---------------------------------------------------------------------------
+const QUEUE_OBJECT = {
+  isQueued: true,
+  modelKey: "auto",
+  queueCount: 0,
+  queueType: "p3",
+  retryAfterSeconds: 30,
+  serviceAvailable: false,
+  subCode: "RESOURCE_LIMIT",
+  waitTime: 30,
+};
+
+/** Encode the queue object the way upstream does: inside nested JSON strings. */
+function nestQueue(depth = 2) {
+  let payload = JSON.stringify(QUEUE_OBJECT);
+  for (let i = 0; i < depth; i++) {
+    payload = JSON.stringify({ code: i === 0 ? QODER_QUEUE_CODE : "403", message: payload, subCode: "RESOURCE_LIMIT" });
+  }
+  return payload;
+}
+
+describe("parseQoderQueueInfo", () => {
+  it("parses a doubly-nested queue payload", () => {
+    const info = parseQoderQueueInfo(nestQueue(2));
+    expect(info).not.toBeNull();
+    expect(info.isQueued).toBe(true);
+    expect(info.modelKey).toBe("auto");
+    expect(info.queueType).toBe("p3");
+    expect(info.retryAfterSeconds).toBe(30);
+    expect(info.serviceAvailable).toBe(false);
+    expect(info.subCode).toBe("RESOURCE_LIMIT");
+  });
+
+  it("parses a triply-nested queue payload", () => {
+    const info = parseQoderQueueInfo(nestQueue(3));
+    expect(info?.isQueued).toBe(true);
+    expect(info?.modelKey).toBe("auto");
+  });
+
+  it("parses the envelope shape wrapQoderSSE sees", () => {
+    const envelope = JSON.stringify({
+      headers: { "Content-Type": ["application/json"] },
+      body: nestQueue(2),
+      statusCodeValue: 403,
+      statusCode: "FORBIDDEN",
+    });
+    expect(parseQoderQueueInfo(envelope)?.isQueued).toBe(true);
+  });
+
+  it("accepts an already-parsed object", () => {
+    expect(parseQoderQueueInfo({ error: { message: nestQueue(1) } })?.queueType).toBe("p3");
+  });
+
+  it("returns null for a billing block (code 112)", () => {
+    expect(parseQoderQueueInfo('{"code":"112","message":"Quota exhausted","pricingUrl":"x"}')).toBeNull();
+  });
+
+  it("returns null for an ordinary error", () => {
+    expect(parseQoderQueueInfo('{"code":"500","message":"Internal error"}')).toBeNull();
+  });
+
+  it("returns null for empty and non-JSON input", () => {
+    expect(parseQoderQueueInfo("")).toBeNull();
+    expect(parseQoderQueueInfo("not json")).toBeNull();
+    expect(parseQoderQueueInfo(null)).toBeNull();
+    expect(parseQoderQueueInfo(undefined)).toBeNull();
+  });
+
+  it("still flags a bare 10605 code without the inner object", () => {
+    // The code alone is the signal; upstream has been seen to omit the detail.
+    expect(parseQoderQueueInfo('{"code":"10605"}')?.code).toBe("10605");
+  });
+});
+
+describe("isQoderQueuedBody", () => {
+  it("is true for a queued payload", () => {
+    expect(isQoderQueuedBody(nestQueue(2))).toBe(true);
+  });
+
+  it("is false for a billing block", () => {
+    expect(isQoderQueuedBody('{"code":"112","message":"Quota exhausted"}')).toBe(false);
+  });
+
+  it("is false for a normal completion chunk", () => {
+    const chunk = JSON.stringify({ choices: [{ delta: { content: "hi" } }], statusCodeValue: 200 });
+    expect(isQoderQueuedBody(chunk)).toBe(false);
+  });
+});
+
+describe("computeQoderQueueDelayMs", () => {
+  it("honours retryAfterSeconds from the inference refusal", () => {
+    expect(computeQoderQueueDelayMs({ retryAfterSeconds: 30 })).toBe(30_000);
+    expect(computeQoderQueueDelayMs({ retryAfterSeconds: 20 })).toBe(20_000);
+  });
+
+  it("falls back to waitTime when retryAfterSeconds is absent", () => {
+    expect(computeQoderQueueDelayMs({ waitTime: 25 })).toBe(25_000);
+  });
+
+  it("never replays faster than 15s, even on a tiny hint", () => {
+    // Qoder answers retryAfterSeconds:2 while still refusing; replaying that
+    // fast makes the throttle worse.
+    expect(computeQoderQueueDelayMs({ retryAfterSeconds: 0 })).toBe(15_000);
+    expect(computeQoderQueueDelayMs({ retryAfterSeconds: 2 })).toBe(15_000);
+  });
+
+  it("clamps the upper bound to 60s", () => {
+    expect(computeQoderQueueDelayMs({ retryAfterSeconds: 600 })).toBe(60_000);
+  });
+
+  it("uses a 30s default when no hint is present", () => {
+    expect(computeQoderQueueDelayMs(null)).toBe(30_000);
+    expect(computeQoderQueueDelayMs({})).toBe(30_000);
+  });
+
+  it("raises a status-derived hint to 30s", () => {
+    // The queue-status endpoint has reported isQueued:false with
+    // retryAfterSeconds:2 while the inference call was still refused, so its
+    // hint is not trusted below one full interval.
+    expect(computeQoderQueueDelayMs({ retryAfterSeconds: 2 }, { fromStatus: true })).toBe(30_000);
+    expect(computeQoderQueueDelayMs({ retryAfterSeconds: 45 }, { fromStatus: true })).toBe(45_000);
+  });
+});
+
+describe("qoderQueueStatusUrl", () => {
+  it("carries both required parameters", () => {
+    const url = qoderQueueStatusUrl("https://api2.qoder.sh", { requestSetId: "abc-123", modelKey: "auto" });
+    expect(url).toBe(
+      "https://api2.qoder.sh/algo/api/v2/service/ask/queue/status?requestSetId=abc-123&modelKey=auto",
+    );
+  });
+
+  it("adds queueType when known", () => {
+    const url = qoderQueueStatusUrl("https://api2.qoder.sh", {
+      requestSetId: "abc",
+      modelKey: "auto",
+      queueType: "p3",
+    });
+    expect(url).toContain("queueType=p3");
+  });
+
+  it("omits parameters it was not given", () => {
+    expect(qoderQueueStatusUrl("https://api2.qoder.sh", {})).toBe(
+      "https://api2.qoder.sh/algo/api/v2/service/ask/queue/status?",
+    );
+  });
+});
+
+describe("parseQoderQueueStatus", () => {
+  it("parses the ready shape", () => {
+    const info = parseQoderQueueStatus(
+      '{"isQueued":false,"modelKey":"auto","queueType":"p3","queueCount":0,"waitTime":0,"retryAfterSeconds":2,"serviceAvailable":true}',
+    );
+    expect(info).toEqual({
+      isQueued: false,
+      serviceAvailable: true,
+      modelKey: "auto",
+      queueType: "p3",
+      queueCount: 0,
+      retryAfterSeconds: 2,
+      waitTime: 0,
+    });
+  });
+
+  it("parses the still-queued shape", () => {
+    const info = parseQoderQueueStatus(
+      '{"subCode":"RESOURCE_LIMIT","isQueued":true,"modelKey":"auto","queueType":"p3","queueCount":0,"waitTime":30,"retryAfterSeconds":30,"serviceAvailable":false}',
+    );
+    expect(info?.isQueued).toBe(true);
+    expect(info?.waitTime).toBe(30);
+  });
+
+  it("returns null when isQueued is missing (unknown endpoint shape)", () => {
+    expect(parseQoderQueueStatus('{"status":"ok"}')).toBeNull();
+    expect(parseQoderQueueStatus("")).toBeNull();
+    expect(parseQoderQueueStatus("not json")).toBeNull();
+  });
+});
+
+describe("qoderQueueMaxWaitMs", () => {
+  it("defaults to 10 minutes", () => {
+    const prev = process.env.QODER_MODEL_QUEUE_MAX_WAIT_MS;
+    delete process.env.QODER_MODEL_QUEUE_MAX_WAIT_MS;
+    expect(qoderQueueMaxWaitMs()).toBe(600_000);
+    if (prev !== undefined) process.env.QODER_MODEL_QUEUE_MAX_WAIT_MS = prev;
+  });
+
+  it("honours the env override", () => {
+    const prev = process.env.QODER_MODEL_QUEUE_MAX_WAIT_MS;
+    process.env.QODER_MODEL_QUEUE_MAX_WAIT_MS = "5000";
+    expect(qoderQueueMaxWaitMs()).toBe(5000);
+    if (prev === undefined) delete process.env.QODER_MODEL_QUEUE_MAX_WAIT_MS;
+    else process.env.QODER_MODEL_QUEUE_MAX_WAIT_MS = prev;
+  });
+
+  it("ignores a nonsensical override", () => {
+    const prev = process.env.QODER_MODEL_QUEUE_MAX_WAIT_MS;
+    process.env.QODER_MODEL_QUEUE_MAX_WAIT_MS = "not-a-number";
+    expect(qoderQueueMaxWaitMs()).toBe(600_000);
+    if (prev === undefined) delete process.env.QODER_MODEL_QUEUE_MAX_WAIT_MS;
+    else process.env.QODER_MODEL_QUEUE_MAX_WAIT_MS = prev;
   });
 });
