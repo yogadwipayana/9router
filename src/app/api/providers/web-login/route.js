@@ -110,7 +110,6 @@ export async function GET(request) {
     error: session.error || null,
     connectionId: session.savedConnectionId || null,
     email: session.accountEmail || null,
-    credentialPreview: session.credential ? `${session.credential.slice(0, 10)}…` : null,
   });
 }
 

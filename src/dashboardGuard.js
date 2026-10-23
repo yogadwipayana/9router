@@ -59,6 +59,11 @@ const ALWAYS_PROTECTED = [
   // anonymous even when requireLogin is disabled. The CLI launcher sends
   // x-9r-cli-token, which this list accepts, so `9router` keeps working.
   "/api/cli-tools",
+  // web-login drives a headed browser on the host and harvests the live
+  // session cookies of an already-signed-in Chrome profile, then writes them
+  // into a connection credential. Same class as the oauth auto-import routes:
+  // never anonymous, even when requireLogin is disabled.
+  "/api/providers/web-login",
 ];
 
 // Require auth, but allow through if requireLogin is disabled
@@ -90,6 +95,7 @@ const LOCAL_ONLY_PATHS = [
   // cowork-settings below is bypassable through the aggregator.
   "/api/cli-tools/all-statuses",
   "/api/cli-tools/cowork-settings",
+  "/api/providers/web-login",
   "/api/cli-tools/antigravity-mitm",
   "/api/mcp/",
   "/api/tunnel/tailscale-install",

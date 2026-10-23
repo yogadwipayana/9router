@@ -4,6 +4,7 @@
 // JWT is minted from Clerk per request; the account uid comes from the minted
 // token's claims. Ported from OmniRoute's uc persona paths.
 import { BaseExecutor } from "./base.js";
+import { fetchPublic } from "../../src/shared/utils/ssrfGuard.js";
 
 const UC_ORIGIN = "https://uncensored.com";
 const UC_CLERK_FAPI = "https://clerk.uncensored.com";
@@ -304,8 +305,12 @@ async function resolveImageBytes(ref, signal, log) {
   const dataMatch = /^data:[^;]*;base64,(.*)$/.exec(String(ref));
   if (dataMatch) return Buffer.from(dataMatch[1], "base64");
   if (/^https?:\/\//i.test(String(ref))) {
-    const res = await fetch(ref, { signal, headers: { Accept: "image/*", "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36" } });
-    if (!res.ok) throw new Error(`input image download failed (HTTP ${res.status})`);
+    // Client-supplied URL: resolve through the SSRF guard so it cannot reach
+    // loopback, link-local (cloud metadata) or private ranges, and so each
+    // redirect hop is re-validated. The upstream status is not echoed back —
+    // that would make this a blind port/host oracle.
+    const res = await fetchPublic(ref, { signal, headers: { Accept: "image/*", "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36" } });
+    if (!res.ok) throw new Error("input image download failed");
     return Buffer.from(await res.arrayBuffer());
   }
   try {

@@ -195,7 +195,9 @@ async function runLogin(session, config) {
     throw new Error("No Chrome/Chromium executable found — set CHROME_PATH or install Google Chrome");
   }
   const dir = profileDir(session.profile);
-  mkdirSync(dir, { recursive: true });
+  // 0o700: this tree holds a live browser cookie DB, and the data dir can fall
+  // back to os.tmpdir(), which is world-readable.
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
 
   const context = await launchLoginBrowser(chromium, dir, executablePath);
 
