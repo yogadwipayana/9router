@@ -54,6 +54,7 @@ import { createQoderSseCoalescer } from "../shared/qoder/sse.js";
 import { dispatchQoderGrpc, qoderBodyBytes, qoderTransportOverride, resolveQoderTransport } from "./qoder-grpc.js";
 import {
   computeQoderQueueDelayMs,
+  isQueueProgressing,
   parseQoderQueueInfo,
   parseQoderQueueStatus,
   qoderQueueMaxWaitMs,
@@ -1185,6 +1186,12 @@ export class QoderExecutor extends BaseExecutor {
     const maxQueueWaitMs = qoderQueueMaxWaitMs();
     const waitStartedAt = Date.now();
     let lastQueueInfo = null;
+    // A p3 account warms out of the queue by being used, so a fixed wall-clock
+    // budget is the wrong give-up rule: it either cuts the warm-up short (the
+    // account then gets locked and never warms again) or blocks too long on a
+    // genuinely stuck request. Give up only when the queue has also stopped
+    // moving between polls.
+    let stagnantPolls = 0;
     let statusPollsEnabled = true;
     // Guards the "status says ready" fast path: one free replay, then stop
     // believing an endpoint that has already been contradicted.
@@ -1292,9 +1299,14 @@ export class QoderExecutor extends BaseExecutor {
         return { response: wrapped, url: sent.url, headers: sent.headers, transformedBody: sent.transformedBody };
       }
 
+      // Track whether the queue actually moved since the previous poll. Two
+      // identical snapshots in a row is the real "stuck" signal.
+      const progressed = isQueueProgressing(lastQueueInfo, queueInfo);
       lastQueueInfo = queueInfo;
+      stagnantPolls = progressed ? 0 : stagnantPolls + 1;
+
       const waitedMs = Date.now() - waitStartedAt;
-      if (waitedMs >= maxQueueWaitMs) {
+      if (waitedMs >= maxQueueWaitMs && stagnantPolls >= 2) {
         log?.warn?.(
           "QODER",
           `model queue wait timed out after ${Math.round(waitedMs / 1000)}s for ${label} ` +
