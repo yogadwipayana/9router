@@ -245,7 +245,16 @@ export const __test__ = {
 };
 
 export async function proxy(request) {
-  const { pathname } = request.nextUrl;
+  // Next.js routes on the DECODED path (route-matcher / filesystem both
+  // decodeURIComponent), but the lists below match with startsWith on the raw
+  // pathname. Decode first so e.g. "/api/settings/databas%65" cannot dodge a
+  // gate here yet still resolve to the real handler. Reject malformed escapes.
+  let pathname;
+  try {
+    pathname = decodeURIComponent(request.nextUrl.pathname);
+  } catch {
+    return NextResponse.json({ error: "Bad request" }, { status: 400 });
+  }
 
   // Local-only gate for spawn-capable / host-secret routes.
   if (LOCAL_ONLY_PATHS.some((p) => pathname.startsWith(p))) {

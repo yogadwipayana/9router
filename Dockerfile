@@ -51,7 +51,7 @@ RUN --mount=type=cache,target=/root/.npm \
       --fetch-retry-mintimeout=10000 \
       --fetch-retry-maxtimeout=120000 \
       --fetch-timeout=300000 \
-      wreq-js playwright-core
+      wreq-js@3.2.0 playwright-core@1.62.1
 
 FROM ${NODE_IMAGE} AS runner
 ARG ALPINE_MIRROR

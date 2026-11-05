@@ -294,8 +294,9 @@ export async function GET(request, { params }) {
       if (!MCODE_LEASE_PROVIDERS.includes(provider)) {
         return NextResponse.json({ error: "lease-status only supported for minimax-code/minimax-code-global" }, { status: 400 });
       }
-      const override = searchParams.get("data_dir");
-      const dataDir = override ? String(override).trim() : resolveMcodeDataDir(null);
+      // Data dir is server-resolved only (env or default install location).
+      // A caller-supplied path could point the broker read at a UNC share.
+      const dataDir = resolveMcodeDataDir(null);
       try {
         const status = await requestStatus(dataDir);
         return NextResponse.json({ found: true, dataDir, ...status });
@@ -332,7 +333,9 @@ export async function POST(request, { params }) {
       if (!MCODE_LEASE_PROVIDERS.includes(provider)) {
         return NextResponse.json({ error: "lease-connect only supported for minimax-code/minimax-code-global" }, { status: 400 });
       }
-      const dataDir = body?.dataDir ? String(body.dataDir).trim() : resolveMcodeDataDir(null);
+      // Data dir is server-resolved only (see lease-status); never taken from
+      // the request body.
+      const dataDir = resolveMcodeDataDir(null);
       try {
         // Validate availability up front so the user gets the broker's exact
         // failure reason instead of a dead connection.

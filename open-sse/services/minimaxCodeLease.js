@@ -66,6 +66,16 @@ export function resolveMcodeDataDir(credentials) {
 }
 
 export function resolveLeaseEndpoint(dataDir, platform = process.platform) {
+  // Reject UNC / network paths on any platform. A caller-supplied "\\host\share"
+  // passes path.win32.isAbsolute, and readCapability's fs.readFileSync on it
+  // would make the host open an outbound SMB connection and leak its NTLM hash.
+  const s = String(dataDir);
+  const c0 = s.charCodeAt(0);
+  const c1 = s.charCodeAt(1);
+  // 47 = "/", 92 = "\". Two leading slashes of either kind = a UNC / network path.
+  if ((c0 === 47 || c0 === 92) && (c1 === 47 || c1 === 92)) {
+    throw new AuthLeaseError("INVALID_REQUEST", "dataDir must be a local path.");
+  }
   if (platform === "win32") {
     // The broker names its pipe after the lowercased, win32-NORMALIZED data
     // dir (backslashes). Forward-slash joins hash to a different pipe —
