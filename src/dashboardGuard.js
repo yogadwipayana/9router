@@ -64,6 +64,8 @@ const ALWAYS_PROTECTED = [
   // into a connection credential. Same class as the oauth auto-import routes:
   // never anonymous, even when requireLogin is disabled.
   "/api/providers/web-login",
+  "/api/oauth/minimax-code/lease",
+  "/api/oauth/minimax-code-global/lease",
 ];
 
 // Require auth, but allow through if requireLogin is disabled
@@ -108,6 +110,8 @@ const LOCAL_ONLY_PATHS = [
   "/api/oauth/kiro/auto-import",
   "/api/oauth/xiaomi-mimo/auto-import",
   "/api/oauth/zed/auto-import",
+  "/api/oauth/minimax-code/lease",
+  "/api/oauth/minimax-code-global/lease",
   "/api/auth/reset-password",
   "/api/headroom/start",
   "/api/headroom/stop",
