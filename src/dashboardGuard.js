@@ -54,6 +54,7 @@ const ALWAYS_PROTECTED = [
   "/api/oauth/kiro/auto-import",
   "/api/oauth/xiaomi-mimo/auto-import",
   "/api/oauth/zed/auto-import",
+  "/api/oauth/commandcode/auto-import",
   // CLI-tool settings routes write a live dashboard API key into host config
   // files and their GET handlers read those files back, so they must never be
   // anonymous even when requireLogin is disabled. The CLI launcher sends
@@ -110,6 +111,7 @@ const LOCAL_ONLY_PATHS = [
   "/api/oauth/kiro/auto-import",
   "/api/oauth/xiaomi-mimo/auto-import",
   "/api/oauth/zed/auto-import",
+  "/api/oauth/commandcode/auto-import",
   "/api/oauth/minimax-code/lease",
   "/api/oauth/minimax-code-global/lease",
   "/api/auth/reset-password",
