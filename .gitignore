@@ -88,6 +88,9 @@ graphify-out/*
 # Kiro local workspace state
 .kiro/
 9router-*
+# ...but keep source files of providers whose id starts with "9router-" (e.g. 9router-go)
+!open-sse/providers/registry/9router-*.js
+!public/providers/9router-*.png
 
 # Local sensitive / temp files
 .engine-token.txt

@@ -6,6 +6,7 @@ import {
   FREE_PROVIDERS,
   FREE_TIER_PROVIDERS,
   getProviderAlias,
+  HOSTED_GATEWAY_PROVIDER_IDS,
   isAnthropicCompatibleProvider,
   isOpenAICompatibleProvider,
   OAUTH_PROVIDERS,
@@ -67,11 +68,11 @@ function comboSeatCapabilities(seat) {
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
 // Adding a provider here makes /v1/models prefer the live catalog for it.
-const LIVE_MODEL_RESOLVERS = {
-  "9router": async (conn) => {
+function hostedGatewayResolver(providerId) {
+  return async (conn) => {
     if (!conn.apiKey) return null;
     const proxy = await resolveConnectionProxyConfig(conn.providerSpecificData || {});
-    const response = await proxyAwareFetch(PROVIDERS["9router"].validateUrl, {
+    const response = await proxyAwareFetch(PROVIDERS[providerId].validateUrl, {
       method: "GET",
       headers: {
         "Content-Type": "application/json",
@@ -85,7 +86,11 @@ const LIVE_MODEL_RESOLVERS = {
     const data = await response.json();
     const models = parseOpenAIStyleModels(data);
     return models.length ? { models } : null;
-  },
+  };
+}
+
+const LIVE_MODEL_RESOLVERS = {
+  ...Object.fromEntries(HOSTED_GATEWAY_PROVIDER_IDS.map((id) => [id, hostedGatewayResolver(id)])),
   kiro: async (conn) => {
     const result = await resolveKiroModels({
       accessToken: conn.accessToken,

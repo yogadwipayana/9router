@@ -1,6 +1,8 @@
 {
   "aliasToId": {
     "9router": "9router",
+    "9capn": "9capn",
+    "9router-go": "9router-go",
     "cc": "claude",
     "cx": "codex",
     "gc": "gemini-cli",
@@ -135,7 +137,9 @@
     "ns": "nous"
   },
   "idToAlias": {
+    "9capn": "9capn",
     "9router": "9router",
+    "9router-go": "9router-go",
     "agnes": "agnes",
     "alicode": "alicode",
     "alicode-intl": "alicode-intl",
@@ -281,7 +285,9 @@
     "zed": "zd"
   },
   "modelKeys": [
+    "9capn",
     "9router",
+    "9router-go",
     "af",
     "ag",
     "agnes",

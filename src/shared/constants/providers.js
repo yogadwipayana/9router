@@ -31,6 +31,7 @@ function buildProviderEntry(r) {
     ...(r.hasProviderSpecificData ? { hasProviderSpecificData: true } : {}),
     ...(r.noAuth ? { noAuth: true } : {}),
     ...(r.passthroughModels ? { passthroughModels: true } : {}),
+    ...(r.hostedGateway ? { hostedGateway: true } : {}),
     ...(r.hasOAuth ? { hasOAuth: true } : {}),
     ...(r.authModes ? { authModes: r.authModes } : {}),
     ...(r.authType ? { authType: r.authType } : {}),
@@ -98,6 +99,15 @@ export function isAnthropicCompatibleProvider(providerId) {
 
 export function isCustomEmbeddingProvider(providerId) {
   return typeof providerId === "string" && providerId.startsWith(CUSTOM_EMBEDDING_PREFIX);
+}
+
+// Hosted 9Router-compatible gateways (registry `hostedGateway: true`, e.g. 9router,
+// 9capn, 9router-go). Their model list is the live, per-key catalog at validateUrl.
+export const HOSTED_GATEWAY_PROVIDER_IDS = REGISTRY.filter((r) => r.hostedGateway).map((r) => r.id);
+const HOSTED_GATEWAY_ID_SET = new Set(HOSTED_GATEWAY_PROVIDER_IDS);
+
+export function isHostedGatewayProvider(providerId) {
+  return HOSTED_GATEWAY_ID_SET.has(providerId);
 }
 
 // All providers (combined)

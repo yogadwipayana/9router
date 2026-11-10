@@ -1,7 +1,7 @@
 import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { testProxyUrl } from "@/lib/network/proxyTest";
-import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
+import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isHostedGatewayProvider, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { probeBedrockCredentials } from "open-sse/executors/bedrock.js";
 import { resolveOllamaLocalHost, PROVIDERS } from "open-sse/config/providers.js";
@@ -590,6 +590,11 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
   }
 
   try {
+    if (isHostedGatewayProvider(connection.provider)) {
+      const res = await fetchWithConnectionProxy(PROVIDERS[connection.provider].validateUrl, { headers: { Authorization: `Bearer ${connection.apiKey}` } }, effectiveProxy);
+      return { valid: res.ok, error: res.ok ? null : "Invalid API key" };
+    }
+
     switch (connection.provider) {
       case "commandcode": {
         const res = await fetchWithConnectionProxy(
@@ -646,10 +651,6 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
       }
       case "vercel-ai-gateway": {
         const res = await fetchWithConnectionProxy("https://ai-gateway.vercel.sh/v1/models", { headers: { Authorization: `Bearer ${connection.apiKey}` } }, effectiveProxy);
-        return { valid: res.ok, error: res.ok ? null : "Invalid API key" };
-      }
-      case "9router": {
-        const res = await fetchWithConnectionProxy(PROVIDERS["9router"].validateUrl, { headers: { Authorization: `Bearer ${connection.apiKey}` } }, effectiveProxy);
         return { valid: res.ok, error: res.ok ? null : "Invalid API key" };
       }
       case "anthropic": {

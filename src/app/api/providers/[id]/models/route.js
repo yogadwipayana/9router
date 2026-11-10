@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getProviderConnectionById } from "@/models";
-import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
+import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, HOSTED_GATEWAY_PROVIDER_IDS } from "@/shared/constants/providers";
 import { GEMINI_CONFIG, ZED_HOSTED_CONFIG } from "@/lib/oauth/constants/oauth";
 import { refreshGoogleToken, refreshCodexToken, updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { PROVIDERS, resolveOllamaLocalHost } from "open-sse/config/providers.js";
@@ -301,7 +301,7 @@ const PROVIDER_MODELS_CONFIG = {
   byteplus: createOpenAIModelsConfig("https://ark.ap-southeast.bytepluses.com/api/coding/v3/models"),
 
   // OpenAI-compatible API key providers
-  "9router": createOpenAIModelsConfig(PROVIDERS["9router"].validateUrl),
+  ...Object.fromEntries(HOSTED_GATEWAY_PROVIDER_IDS.map((id) => [id, createOpenAIModelsConfig(PROVIDERS[id].validateUrl)])),
   deepseek: createOpenAIModelsConfig("https://api.deepseek.com/models"),
   groq: createOpenAIModelsConfig("https://api.groq.com/openai/v1/models"),
   xai: createOpenAIModelsConfig("https://api.x.ai/v1/models"),

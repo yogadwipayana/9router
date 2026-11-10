@@ -22,4 +22,5 @@ export default {
   serviceKinds: ["llm"],
   models: [],
   passthroughModels: true,
+  hostedGateway: true,
 };

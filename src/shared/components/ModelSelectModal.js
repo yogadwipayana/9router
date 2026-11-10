@@ -7,7 +7,7 @@ import ProviderIcon from "./ProviderIcon";
 import CapacityBadges from "./CapacityBadges";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
-import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, AI_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, getProviderAlias } from "@/shared/constants/providers";
+import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, AI_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isHostedGatewayProvider, getProviderAlias } from "@/shared/constants/providers";
 import { parseSearchQuery, matchesSearch } from "@/shared/utils/modelSearchFilter";
 import { getDeactivatedProviderIds } from "@/shared/utils/connectionStatus";
 
@@ -70,6 +70,62 @@ function useLiveProviderModels(isOpen, connectionIds, label) {
   }, [isOpen, idsKey, label]);
 
   return models;
+}
+
+// Hosted 9Router-compatible gateways (9router, 9capn, 9router-go, ...) each front a
+// different upstream, so their live catalogs are kept apart per provider id. Gateway
+// builds differ in which field names the model, hence the id/model/name fallback.
+function useHostedGatewayModels(isOpen, connections) {
+  const [modelsByProvider, setModelsByProvider] = useState({});
+  const connKey = (connections ?? [])
+    .filter((c) => c?.id && isHostedGatewayProvider(c.provider))
+    .map((c) => `${c.provider}:${c.id}`)
+    .join("|");
+
+  useEffect(() => {
+    const pairs = connKey
+      ? connKey.split("|").map((pair) => [pair.slice(0, pair.indexOf(":")), pair.slice(pair.indexOf(":") + 1)])
+      : [];
+    if (!isOpen || pairs.length === 0) {
+      setModelsByProvider({});
+      return undefined;
+    }
+
+    let cancelled = false;
+    Promise.all(pairs.map(async ([providerId, connectionId]) => {
+      // One unreachable gateway must not hide the others' catalogs.
+      try {
+        const response = await fetch(`/api/providers/${connectionId}/models`, { cache: "no-store" });
+        if (!response.ok) return [providerId, []];
+        const data = await response.json();
+        return [providerId, Array.isArray(data.models) ? data.models : []];
+      } catch (error) {
+        console.warn(`Unable to load ${providerId} models for selector:`, error);
+        return [providerId, []];
+      }
+    })).then((results) => {
+      if (cancelled) return;
+      const next = {};
+      const seen = {};
+      for (const [providerId, models] of results) {
+        if (!next[providerId]) {
+          next[providerId] = [];
+          seen[providerId] = new Set();
+        }
+        for (const model of models) {
+          const id = model?.id || model?.model || model?.name;
+          if (!id || seen[providerId].has(id)) continue;
+          seen[providerId].add(id);
+          next[providerId].push(model);
+        }
+      }
+      setModelsByProvider(next);
+    });
+
+    return () => { cancelled = true; };
+  }, [isOpen, connKey]);
+
+  return modelsByProvider;
 }
 
 export default function ModelSelectModal({
@@ -135,7 +191,6 @@ export default function ModelSelectModal({
   const [providerNodes, setProviderNodes] = useState([]);
   const [customModels, setCustomModels] = useState([]);
   const [enabledModels, setEnabledModels] = useState({});
-  const [nineRouterModels, setNineRouterModels] = useState([]);
   // Cursor and Cline expose the usable catalog per account, so the static catalog is
   // kept only as a fallback: it goes stale quickly and entitlements differ per account.
   // Single map driven by LIVE_CATALOG_PROVIDERS so the constant cannot drift
@@ -158,43 +213,7 @@ export default function ModelSelectModal({
   const clinepassModels = useLiveProviderModels(isOpen, clinepassConnectionIds, "ClinePass");
   const zedModels = useLiveProviderModels(isOpen, zedConnectionIds, "Zed");
 
-  const nineRouterConnectionIds = useMemo(
-    () => activeProviders
-      .filter((provider) => provider.provider === "9router" && provider.id)
-      .map((provider) => provider.id),
-    [activeProviders],
-  );
-
-  useEffect(() => {
-    if (!isOpen || nineRouterConnectionIds.length === 0) {
-      setNineRouterModels([]);
-      return undefined;
-    }
-
-    let cancelled = false;
-    Promise.all(nineRouterConnectionIds.map(async (connectionId) => {
-      const response = await fetch(`/api/providers/${connectionId}/models`, { cache: "no-store" });
-      if (!response.ok) return [];
-      const data = await response.json();
-      return Array.isArray(data.models) ? data.models : [];
-    }))
-      .then((modelLists) => {
-        if (cancelled) return;
-        const seen = new Set();
-        setNineRouterModels(modelLists.flat().filter((model) => {
-          const id = model?.id || model?.model || model?.name;
-          if (!id || seen.has(id)) return false;
-          seen.add(id);
-          return true;
-        }));
-      })
-      .catch((error) => {
-        console.warn("Unable to load 9Router models for selector:", error);
-        if (!cancelled) setNineRouterModels([]);
-      });
-
-    return () => { cancelled = true; };
-  }, [isOpen, nineRouterConnectionIds]);
+  const gatewayModelsByProvider = useHostedGatewayModels(isOpen, filteredActiveProviders);
 
   const fetchCombos = async () => {
     try {
@@ -357,8 +376,9 @@ export default function ModelSelectModal({
           }));
 
         // For typed kinds, only include hardcoded typed models (aliases are typically LLM-only and lack type info)
-        const liveModels = providerId === "9router"
-          ? nineRouterModels.map((model) => {
+        const isGateway = isHostedGatewayProvider(providerId);
+        const liveModels = (isGateway ? gatewayModelsByProvider[providerId] || [] : [])
+          .map((model) => {
             const id = model.id || model.model || model.name;
             return {
               id,
@@ -366,14 +386,13 @@ export default function ModelSelectModal({
               value: `${alias}/${id}`,
               kind: model.kind || model.type,
             };
-          })
-          : [];
+          });
         const liveIds = new Set(liveModels.map((model) => model.id));
         let combined = [
           ...liveModels,
           ...aliasModels.filter((model) => !liveIds.has(model.id)),
         ];
-        if (providerId === "9router") {
+        if (isGateway) {
           const configuredIds = [
             ...(enabledModels[alias] || []),
             ...(enabledModels[providerId] || []),
@@ -409,20 +428,24 @@ export default function ModelSelectModal({
             if (supports) combined = [{ id: providerId, name: providerInfo.name, value: alias }];
           }
         } else {
-          // LLM/null kind: merge hardcoded models (e.g. mimo-free → mimo-auto) with user-added models
+          // LLM/null kind: merge hardcoded models (e.g. mimo-free → mimo-auto) with user-added models.
+          // `combined` already holds aliases plus, for hosted gateways, the live catalog and
+          // configured ids — keep it rather than rebuilding from aliasModels alone.
           const registeredLlms = customRegisteredModels.filter((m) => !getModelKind(m) || getModelKind(m) === "llm");
-          const seen = new Set([...aliasModels, ...registeredLlms].map((m) => m.value));
+          const registeredValues = new Set(registeredLlms.map((m) => m.value));
+          const listed = [...registeredLlms, ...combined.filter((m) => !registeredValues.has(m.value))];
+          const seen = new Set(listed.map((m) => m.value));
           const hardcoded = getModelsByProviderId(providerId)
             .filter((m) => !getModelKind(m) || getModelKind(m) === "llm")
             .map((m) => ({ id: m.id, name: m.name, value: `${alias}/${m.id}`, kind: getModelKind(m) }))
             .filter((m) => !seen.has(m.value));
-          combined = [...registeredLlms, ...aliasModels.filter((m) => !registeredLlms.some((registered) => registered.value === m.value)), ...hardcoded];
+          combined = [...listed, ...hardcoded];
         }
 
-        // 9Router is a passthrough gateway and may be temporarily unable to
-        // expose its upstream catalog. Keep it selectable so users can enter
+        // Hosted gateways are passthrough and may be temporarily unable to
+        // expose their upstream catalog. Keep them selectable so users can enter
         // a routed model ID manually instead of losing the provider group.
-        if (combined.length === 0 && providerId === "9router" && !kindFilter) {
+        if (combined.length === 0 && isGateway && !kindFilter) {
           combined = [{
             id: "model-id",
             name: `${alias}/model-id`,
@@ -562,7 +585,7 @@ export default function ModelSelectModal({
       // Dynamic passthrough providers have no static model list to seed the
       // enabled-model store. Keep their live catalog selectable until the user
       // explicitly creates an allowlist from the provider page.
-      const hasDynamicCatalog = providerId === "9router" && nineRouterModels.length > 0;
+      const hasDynamicCatalog = isHostedGatewayProvider(providerId) && (gatewayModelsByProvider[providerId]?.length ?? 0) > 0;
       const hasPassthroughPlaceholder = group.models.some((model) => model.isPlaceholder);
       if (configuredEnabledIds.length > 0 || (!hasDynamicCatalog && !hasPassthroughPlaceholder)) {
         const enabledIds = new Set(configuredEnabledIds);
@@ -594,7 +617,7 @@ export default function ModelSelectModal({
     });
 
     return groups;
-  }, [filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, enabledModels, kindFilter, effectiveConnections, deactivatedProviderIds, cursorModels, clineModels, clinepassModels, zedModels, nineRouterModels]);
+  }, [filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, enabledModels, kindFilter, effectiveConnections, deactivatedProviderIds, cursorModels, clineModels, clinepassModels, zedModels, gatewayModelsByProvider]);
 
   // Parse search query into structured query (regex, positive tokens, negative tokens)
   const parsedQuery = useMemo(() => parseSearchQuery(searchQuery), [searchQuery]);
