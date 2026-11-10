@@ -140,7 +140,10 @@ function mapMessage(message) {
     out.tool_call_id = { value: message.tool_call_id };
   }
   if (typeof message?.reasoning_content === "string" && message.reasoning_content) {
-    out.reasoning_content = message.reasoning_content;
+    // reasoning_content is a google.protobuf.StringValue in chat.proto (field 8),
+    // so it must be the wrapper shape { value } like name/tool_call_id above —
+    // a raw string makes proto-loader throw "reasoning_content: object expected".
+    out.reasoning_content = { value: message.reasoning_content };
   }
   if (Array.isArray(message?.tool_calls) && message.tool_calls.length > 0) {
     out.tool_calls = message.tool_calls.map((call) => ({
