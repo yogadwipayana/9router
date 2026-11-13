@@ -35,15 +35,20 @@ export function parseCommandCodeModels(data) {
     });
 }
 
-/**
- * Fetch the live catalog. Returns null when the vendor endpoint is unreachable
- * or answers non-2xx so callers can fall back to their static list.
- */
-export async function resolveCommandCodeModels(fetchImpl = fetch) {
+// The vendor advertises refreshAfterSeconds: 900. GET /v1/models is reachable
+// by any API-key holder, so without a cache every listing call fanned out to
+// the vendor; without a timeout a slow vendor stalled the listing.
+const CATALOG_TTL_MS = 15 * 60 * 1000;
+const CATALOG_TIMEOUT_MS = 8000;
+let catalogCache = null; // { value, expiresAt } — default-fetch results only
+let catalogInflight = null;
+
+async function fetchCommandCodeModels(fetchImpl) {
   try {
     const response = await fetchImpl(COMMANDCODE_MODELS_URL, {
       method: "GET",
-      headers: { ...commandcodeProvider.transport.headers }
+      headers: { ...commandcodeProvider.transport.headers },
+      signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS)
     });
     if (!response?.ok) return null;
     const models = parseCommandCodeModels(await response.json());
@@ -51,4 +56,25 @@ export async function resolveCommandCodeModels(fetchImpl = fetch) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Fetch the live catalog. Returns null when the vendor endpoint is unreachable
+ * or answers non-2xx so callers can fall back to their static list. Successful
+ * lookups through the default fetch are cached for the vendor's refresh window
+ * and concurrent callers share one request; an injected fetchImpl (tests)
+ * always goes live.
+ */
+export async function resolveCommandCodeModels(fetchImpl = fetch) {
+  if (fetchImpl !== fetch) return fetchCommandCodeModels(fetchImpl);
+  if (catalogCache && Date.now() < catalogCache.expiresAt) return catalogCache.value;
+  if (!catalogInflight) {
+    catalogInflight = fetchCommandCodeModels(fetchImpl)
+      .then((value) => {
+        if (value) catalogCache = { value, expiresAt: Date.now() + CATALOG_TTL_MS };
+        return value ?? catalogCache?.value ?? null;
+      })
+      .finally(() => { catalogInflight = null; });
+  }
+  return catalogInflight;
 }

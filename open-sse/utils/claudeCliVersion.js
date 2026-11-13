@@ -10,7 +10,11 @@ const NPM_URL = "https://registry.npmjs.org/@anthropic-ai/claude-code/latest";
 const TTL_MS = 6 * 60 * 60 * 1000;
 const RETRY_MS = 10 * 60 * 1000;
 const TIMEOUT_MS = 3000;
-const VERSION_RE = /^\d+\.\d+\.\d+$/;
+// The version lands in an outbound User-Agent, so bound each part — an odd
+// registry/mirror answer must not be able to inflate every Claude request.
+const VERSION_RE = /^\d{1,6}\.\d{1,6}\.\d{1,6}$/;
+// The npm "latest" manifest is a few KB; anything far larger is not it.
+const MAX_BODY_BYTES = 256 * 1024;
 
 // Sanity floor: a module that loads before shared.js must still send a real
 // version, never a placeholder Anthropic would reject as too old.
@@ -45,7 +49,11 @@ async function lookup(fetchImpl) {
   try {
     const res = await fetchImpl(NPM_URL, { signal: ctrl.signal, headers: { Accept: "application/json" } });
     if (!res.ok) throw new Error(`npm ${res.status}`);
-    const version = (await res.json())?.version;
+    const declared = Number(res.headers?.get?.("content-length"));
+    if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw new Error("npm body too large");
+    const text = await res.text();
+    if (text.length > MAX_BODY_BYTES) throw new Error("npm body too large");
+    const version = JSON.parse(text)?.version;
     if (!VERSION_RE.test(version || "")) throw new Error("bad version");
     current = version;
     nextCheckAt = Date.now() + TTL_MS;
