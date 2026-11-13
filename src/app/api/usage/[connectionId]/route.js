@@ -8,6 +8,7 @@ import { getExecutor } from "open-sse/executors/index.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
 import { isLeaseConnection } from "open-sse/services/minimaxCodeLease.js";
+import { canAccessLocalOnlyRoute } from "@/dashboardGuard";
 
 // Detect auth-expired messages returned by usage providers instead of throwing
 const AUTH_EXPIRED_PATTERNS = ["expired", "authentication", "unauthorized", "401", "re-authorize"];
@@ -157,6 +158,17 @@ export async function GET(request, { params }) {
 
     if (!isOAuth && !isApikeyEligible && !isLease) {
       return Response.json({ message: "Usage not available for this connection" });
+    }
+
+    // A lease connection's usage lookup reads the desktop app's capability file
+    // and asks its local token broker for a live token — the same host
+    // credential /api/oauth/minimax-code/lease guards as LOCAL_ONLY. This route
+    // is only login-gated, so apply the local-only gate to the lease branch.
+    if (isLease && !(await canAccessLocalOnlyRoute(request))) {
+      return Response.json(
+        { error: "Local only: CLI token required", message: "Lease usage is only available from the host machine" },
+        { status: 403 }
+      );
     }
 
     // Resolve connection proxy config; force strictProxy=false so quota/refresh fall back to direct on failure

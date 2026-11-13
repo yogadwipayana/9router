@@ -235,7 +235,10 @@ function isPublicApi(pathname) {
 }
 
 // Shared with src/proxy.js — the mimo login branch must respect dashboard auth.
-export { isAuthenticated };
+// canAccessLocalOnlyRoute is shared with route handlers that only touch host
+// credentials on some branches (e.g. /api/usage for MiniMax desktop leases), so
+// they can apply the LOCAL_ONLY_PATHS gate to that branch alone.
+export { isAuthenticated, canAccessLocalOnlyRoute };
 
 export const __test__ = {
   isLocalRequest,
