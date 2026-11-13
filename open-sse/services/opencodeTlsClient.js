@@ -11,6 +11,7 @@
 // wreq-js is an optional dependency; when absent the caller keeps its native
 // fetch and stays subject to the gate rather than failing the request here.
 
+import { createHash } from "node:crypto";
 import { loadRuntimeDep } from "./lazyRuntime.js";
 
 // BoringSSL/Chrome-family cipher list the upstream accepts, in the order Bun
@@ -38,9 +39,10 @@ const OPENCODE_CIPHER_LIST = [
 const DEFAULT_TIMEOUT_MS = 120000;
 
 // A wreq-js session pins one proxy at creation ("Session proxy cannot be
-// changed after creation"), so the cache must be keyed by proxy URL: a proxy
-// switch hands out a fresh session instead of silently reusing the old one's
-// tunnel. The key "" is the no-proxy (direct) session.
+// changed after creation"), so the cache must be keyed by the full proxy URL
+// (see proxySessionKey): a proxy switch hands out a fresh session instead of
+// silently reusing the old one's tunnel. The key "" is the no-proxy (direct)
+// session.
 const sessionsByProxy = new Map();
 const SESSIONS_MAX = 8;
 
@@ -51,17 +53,29 @@ export class OpencodeTlsUnavailableError extends Error {
   }
 }
 
+// Display form of the proxy (logs, x-9r-proxy-via). Credentials must never
+// surface there, so keep only scheme://host:port — and never echo a string we
+// could not parse, since we cannot tell where its credentials are.
 function normalizeProxyKey(proxyUrl) {
   const raw = typeof proxyUrl === "string" ? proxyUrl.trim() : "";
   if (!raw) return "";
   try {
-    // Credentials are part of the identity (auth context isolates pools), but
-    // must never surface in logs or error text. Keep only scheme://host:port.
     const parsed = new URL(raw);
     return `${parsed.protocol}//${parsed.hostname}${parsed.port ? `:${parsed.port}` : ""}`;
   } catch {
-    return raw; // unverifiable — treat the raw string as its own key
+    return "unparseable-proxy";
   }
+}
+
+// Cache identity. Credentials ARE part of the identity: two pools on the same
+// gateway host:port with different users (sticky-session / per-country
+// residential proxies) are different egress identities, and keying on the
+// redacted display form would let one pool's traffic ride the other's tunnel.
+// Hash the full URL so the Map never holds credentials in clear text.
+function proxySessionKey(proxyUrl) {
+  const raw = typeof proxyUrl === "string" ? proxyUrl.trim() : "";
+  if (!raw) return "";
+  return `sha256:${createHash("sha256").update(raw).digest("hex")}`;
 }
 
 async function buildSession(proxyUrl) {
@@ -80,7 +94,7 @@ async function buildSession(proxyUrl) {
 }
 
 async function loadSession(proxyUrl = "") {
-  const key = normalizeProxyKey(proxyUrl);
+  const key = proxySessionKey(proxyUrl);
   if (!sessionsByProxy.has(key)) {
     if (sessionsByProxy.size >= SESSIONS_MAX) {
       // Evict oldest: a rotated-out pool identity should not hold connections.
@@ -147,4 +161,4 @@ export async function opencodeTlsFetch(url, init = {}, { signal, timeoutMs = DEF
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
-export const __test__ = { OPENCODE_CIPHER_LIST, normalizeProxyKey, sessionsByProxy };
+export const __test__ = { OPENCODE_CIPHER_LIST, normalizeProxyKey, proxySessionKey, sessionsByProxy };

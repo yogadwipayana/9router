@@ -180,6 +180,17 @@ function safeProxyHost(proxyUrl) {
   }
 }
 
+/**
+ * Strip `user:pass@` userinfo from any URL embedded in an error message.
+ * Transport adapters (wreq-js is native code) may echo the proxy URL they were
+ * handed; that message is rethrown and logged, so credentials must not ride it.
+ */
+function redactUrlCredentials(message) {
+  // Greedy up to the LAST "@" before the host so a raw "@" inside the password
+  // cannot leave a tail of it behind.
+  return String(message ?? "").replace(/(\/\/)[^\s/]+@/g, "$1***@");
+}
+
 /** Destination host only, never the full URL (which may carry a query/path). */
 function safeTargetHost(url) {
   try {
@@ -516,8 +527,15 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
       dbg("PROXY", `PROXY ROUTING VERIFIED | ${safeTargetHost(targetUrl)} | transport=adapter | proxy=${via || safeProxyHost(proxyUrl)} | status=${res?.status}`);
       return res;
     } catch (err) {
+      const safeMessage = redactUrlCredentials(err?.message);
       if (proxyOptions?.strictProxy === true) {
-        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${err.message}`);
+        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${safeMessage}`);
+      }
+      if (err instanceof Error && err.message !== safeMessage) {
+        // Keep the original error (callers match on name/code, e.g. AbortError);
+        // a getter-only message (DOMException) can't be rewritten — and can't
+        // carry the proxy URL either.
+        try { err.message = safeMessage; } catch { /* read-only message */ }
       }
       throw err;
     }
