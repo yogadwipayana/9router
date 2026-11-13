@@ -489,24 +489,20 @@ export function createSSEStream(options = {}) {
         if (remaining) buffer += remaining;
 
         if (mode === STREAM_MODE.PASSTHROUGH) {
-          if (buffer) {
-            const pending = buffer.trim();
-            const pendingIsDone = pending.startsWith("data:") && pending.slice(5).trim() === "[DONE]";
-            if (pendingIsDone) {
-              // Trailing sentinel that arrived without its blank-line terminator:
-              // emit it canonically and mark it so the terminator guard below
-              // doesn't append a second [DONE].
-              streamDoneSent = true;
-              reqLogger?.appendConvertedChunk?.(SSE_DONE);
-              controller.enqueue(sharedEncoder.encode(SSE_DONE));
-            } else {
-              let output = buffer;
-              if (buffer.startsWith("data:") && !buffer.startsWith("data: ")) {
-                output = "data: " + buffer.slice(5);
-              }
-              reqLogger?.appendConvertedChunk?.(output);
-              controller.enqueue(sharedEncoder.encode(output));
+          // An unterminated trailing "data: [DONE]" is the upstream sentinel: don't
+          // forward it raw (it would glue onto the properly framed one appended
+          // below, #5592). streamDoneSent is left as the transform loop set it,
+          // so the terminator guard below emits exactly one canonical frame — or
+          // none when a [DONE] was already forwarded mid-stream (wrapQoderSSE).
+          const tail = buffer.trim();
+          const tailIsDone = tail.startsWith("data:") && tail.slice(5).trim() === "[DONE]";
+          if (!tailIsDone && buffer) {
+            let output = buffer;
+            if (buffer.startsWith("data:") && !buffer.startsWith("data: ")) {
+              output = "data: " + buffer.slice(5);
             }
+            reqLogger?.appendConvertedChunk?.(output);
+            controller.enqueue(sharedEncoder.encode(output));
           }
 
           // IMPORTANT: In passthrough mode we still must terminate the SSE stream.
