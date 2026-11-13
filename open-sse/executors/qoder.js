@@ -283,7 +283,8 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
   // reasoning flag, tier list). It is resolved here unless the caller already
   // did so for the transport decision. resolveQoderModelConfig keeps the fork's
   // forceRefresh retry and the Sonus/Cantus static fallback.
-  const modelConfig = preResolvedConfig
+  // `let`: the thinking override below swaps in a copy with is_reasoning:false.
+  let modelConfig = preResolvedConfig
     || await resolveQoderModelConfig({ qoderKey, credentials, log, proxyOptions, signal, region });
 
   const incoming = Array.isArray(body.messages)
@@ -317,13 +318,6 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
       Array.isArray(m?.content) &&
       m.content.some((b) => b && typeof b === "object" && b.type === OPENAI_BLOCK.IMAGE_URL),
   );
-  // The catalog entry has no `source`, so a vision request must inject it:
-  // `source: "system"` marks the model as system-provided, and only then does
-  // the server actually read the image parts (verified: same payload with
-  // source -> "Red", without -> "NOIMAGE").
-  const chatModelConfig = hasImages
-    ? { ...qoderChatModelConfig(modelConfig, { keepSource: true }), source: modelConfig?.source || "system" }
-    : qoderChatModelConfig(modelConfig);
   const tools = body.tools;
 
   // Ground the request in the qodercli persona. A plain-chat client arrives with
@@ -371,6 +365,16 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
     // Reassign rather than mutate: the catalog entry is shared/cached.
     modelConfig = { ...modelConfig, is_reasoning: false };
   }
+
+  // Built AFTER the thinking override above, so a request that disabled
+  // reasoning sends model_config.is_reasoning:false, not the catalog's value.
+  // The catalog entry has no `source`, so a vision request must inject it:
+  // `source: "system"` marks the model as system-provided, and only then does
+  // the server actually read the image parts (verified: same payload with
+  // source -> "Red", without -> "NOIMAGE").
+  const chatModelConfig = hasImages
+    ? { ...qoderChatModelConfig(modelConfig, { keepSource: true }), source: modelConfig?.source || "system" }
+    : qoderChatModelConfig(modelConfig);
 
   const lastUser = lastUserText(messages);
   const psd = credentials.providerSpecificData || {};
@@ -1001,7 +1005,16 @@ export class QoderExecutor extends BaseExecutor {
    */
   _deferredSseResponse(work, params) {
     const encoder = new TextEncoder();
-    const signal = params?.signal;
+    // params.signal is an AbortSignal (no abort()), so a client disconnect
+    // cannot be pushed upstream through it. Track the upstream body instead and
+    // cancel it ourselves, otherwise the Qoder stream keeps running unread.
+    let cancelled = false;
+    let upstreamReader = null;
+    let upstreamBody = null;
+    const releaseUpstream = () => {
+      if (upstreamReader) upstreamReader.cancel().catch(() => {});
+      else if (upstreamBody) upstreamBody.cancel().catch(() => {});
+    };
     return {
       response: new Response(
         new ReadableStream({
@@ -1025,6 +1038,11 @@ export class QoderExecutor extends BaseExecutor {
             try {
               const result = await work;
               const resp = result?.response;
+              upstreamBody = resp?.body || null;
+              if (cancelled) {
+                releaseUpstream();
+                return;
+              }
               if (!resp || !resp.ok || !resp.body) {
                 const message = resp
                   ? await resp.text().catch(() => `upstream status ${resp.status}`)
@@ -1036,12 +1054,17 @@ export class QoderExecutor extends BaseExecutor {
                 return;
               }
               const reader = resp.body.getReader();
+              upstreamReader = reader;
               for (;;) {
                 const { done, value } = await reader.read();
                 if (done) break;
                 controller.enqueue(value);
               }
             } catch (err) {
+              // Includes enqueue failing because the client went away: stop
+              // pulling from upstream rather than leaving its socket open.
+              releaseUpstream();
+              if (cancelled) return;
               try {
                 controller.enqueue(
                   encoder.encode(`data: ${JSON.stringify({ error: { message: err?.message || "qoder stream failed" } })}\n\n`),
@@ -1054,7 +1077,8 @@ export class QoderExecutor extends BaseExecutor {
             }
           },
           cancel() {
-            try { signal?.abort?.(new Error("client cancelled")); } catch { /* ignore */ }
+            cancelled = true;
+            releaseUpstream();
           },
         }),
         {
